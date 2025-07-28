@@ -310,8 +310,51 @@ projection_2dgs_fused_fwd(
     const float far_plane,
     const float radius_clip
 );
+
+std::tuple<
+    at::Tensor,
+    at::Tensor,
+    at::Tensor,
+    at::Tensor,
+    at::Tensor>
+ortho_projection_2dgs_fused_fwd(
+    const at::Tensor means,    // [..., N, 3]
+    const at::Tensor quats,    // [..., N, 4]
+    const at::Tensor scales,   // [..., N, 3]
+    const at::Tensor viewmats, // [..., C, 4, 4]
+    const at::Tensor Ks,       // [..., C, 3, 3]
+    const uint32_t image_width,
+    const uint32_t image_height,
+    const float eps2d,
+    const float near_plane,
+    const float far_plane,
+    const float radius_clip
+);
+
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
 projection_2dgs_fused_bwd(
+    // fwd inputs
+    const at::Tensor means,    // [..., N, 3]
+    const at::Tensor quats,    // [..., N, 4]
+    const at::Tensor scales,   // [..., N, 3]
+    const at::Tensor viewmats, // [..., C, 4, 4]
+    const at::Tensor Ks,       // [..., C, 3, 3]
+    const uint32_t image_width,
+    const uint32_t image_height,
+    // fwd outputs
+    const at::Tensor radii,          // [..., C, N, 2]
+    const at::Tensor ray_transforms, // [..., C, N, 3, 3]
+    // grad outputs
+    const at::Tensor v_means2d,        // [..., C, N, 2]
+    const at::Tensor v_depths,         // [..., C, N]
+    const at::Tensor v_normals,        // [..., C, N, 3]
+    const at::Tensor v_ray_transforms, // [..., C, N, 3, 3]
+    const bool viewmats_requires_grad
+);
+
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+ortho_projection_2dgs_fused_bwd(
     // fwd inputs
     const at::Tensor means,    // [..., N, 3]
     const at::Tensor quats,    // [..., N, 4]
@@ -442,7 +485,92 @@ rasterize_to_pixels_2dgs_bwd(
     bool absgrad
 );
 
+std::tuple<
+    at::Tensor,
+    at::Tensor,
+    at::Tensor,
+    at::Tensor,
+    at::Tensor,
+    at::Tensor,
+    at::Tensor>
+rasterize_to_pixels_ortho_2dgs_fwd(
+    // Gaussian parameters
+    const at::Tensor means2d,        // [..., N, 2] or [nnz, 2]
+    const at::Tensor ray_transforms, // [..., N, 3, 3] or [nnz, 3, 3]
+    const at::Tensor colors,         // [..., N, channels] or [nnz, channels]
+    const at::Tensor opacities,      // [..., N]  or [nnz]
+    const at::Tensor normals,        // [..., N, 3] or [nnz, 3]
+    const at::optional<at::Tensor> backgrounds, // [..., channels]
+    const at::optional<at::Tensor> masks,       // [..., tile_height, tile_width]
+    // image size
+    const uint32_t image_width,
+    const uint32_t image_height,
+    const uint32_t tile_size,
+    // intersections
+    const at::Tensor tile_offsets, // [..., tile_height, tile_width]
+    const at::Tensor flatten_ids   // [n_isects]
+);
+
+std::tuple<
+    at::Tensor,
+    at::Tensor,
+    at::Tensor,
+    at::Tensor,
+    at::Tensor,
+    at::Tensor,
+    at::Tensor>
+rasterize_to_pixels_ortho_2dgs_bwd(
+    // Gaussian parameters
+    const at::Tensor means2d,        // [..., N, 2] or [nnz, 2]
+    const at::Tensor ray_transforms, // [..., N, 3, 3] or [nnz, 3, 3]
+    const at::Tensor colors,         // [..., N, 3] or [nnz, 3]
+    const at::Tensor opacities,      // [..., N] or [nnz]
+    const at::Tensor normals,        // [..., N, 3] or [nnz, 3]
+    const at::Tensor densify,
+    const at::optional<at::Tensor> backgrounds, // [..., 3]
+    const at::optional<at::Tensor> masks,       // [..., tile_height, tile_width]
+    // image size
+    const uint32_t image_width,
+    const uint32_t image_height,
+    const uint32_t tile_size,
+    // ray_crossions
+    const at::Tensor tile_offsets, // [..., tile_height, tile_width]
+    const at::Tensor flatten_ids,  // [n_isects]
+    // forward outputs
+    const at::Tensor render_colors, // [..., image_height, image_width, COLOR_DIM]
+    const at::Tensor render_alphas, // [..., image_height, image_width, 1]
+    const at::Tensor last_ids,      // [..., image_height, image_width]
+    const at::Tensor median_ids,    // [..., image_height, image_width]
+    // gradients of outputs
+    const at::Tensor v_render_colors,  // [..., image_height, image_width, 3]
+    const at::Tensor v_render_alphas,  // [..., image_height, image_width, 1]
+    const at::Tensor v_render_normals, // [..., image_height, image_width, 3]
+    const at::Tensor v_render_distort, // [..., image_height, image_width, 1]
+    const at::Tensor v_render_median,  // [..., image_height, image_width, 1]
+    // options
+    bool absgrad
+);
+
+
 std::tuple<at::Tensor, at::Tensor> rasterize_to_indices_2dgs(
+    const uint32_t range_start,
+    const uint32_t range_end,        // iteration steps
+    const at::Tensor transmittances, // [..., image_height, image_width]
+    // Gaussian parameters
+    const at::Tensor means2d,        // [..., N, 2]
+    const at::Tensor ray_transforms, // [..., N, 3, 3]
+    const at::Tensor opacities,      // [..., N]
+    // image size
+    const uint32_t image_width,
+    const uint32_t image_height,
+    const uint32_t tile_size,
+    // intersections
+    const at::Tensor tile_offsets, // [..., tile_height, tile_width]
+    const at::Tensor flatten_ids   // [n_isects]
+);
+
+
+std::tuple<at::Tensor, at::Tensor> rasterize_to_indices_ortho_2dgs(
     const uint32_t range_start,
     const uint32_t range_end,        // iteration steps
     const at::Tensor transmittances, // [..., image_height, image_width]

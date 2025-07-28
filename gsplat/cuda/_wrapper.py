@@ -1846,6 +1846,7 @@ def fully_fused_projection_2dgs(
     radius_clip: float = 0.0,
     packed: bool = False,
     sparse_grad: bool = False,
+    camera_model: Literal["pinhole", "ortho"] = "pinhole",
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
     """Prepare Gaussians for rasterization
 
@@ -1921,6 +1922,7 @@ def fully_fused_projection_2dgs(
             far_plane,
             radius_clip,
             sparse_grad,
+            camera_model,
         )
     else:
         return _FullyFusedProjection2DGS.apply(
@@ -1935,6 +1937,7 @@ def fully_fused_projection_2dgs(
             near_plane,
             far_plane,
             radius_clip,
+            camera_model,
         )
 
 
@@ -1955,10 +1958,17 @@ class _FullyFusedProjection2DGS(torch.autograd.Function):
         near_plane: float,
         far_plane: float,
         radius_clip: float,
+        camera_model: Literal["pinhole", "ortho"] = "pinhole",
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-        radii, means2d, depths, ray_transforms, normals = _make_lazy_cuda_func(
-            "projection_2dgs_fused_fwd"
-        )(
+
+        if camera_model == "pinhole":
+            func_name = "projection_2dgs_fused_fwd"
+        elif camera_model == "ortho":
+            func_name = "ortho_projection_2dgs_fused_fwd"
+        else:
+            raise ValueError(f"Unsupported camera model: {camera_model}")
+
+        radii, means2d, depths, ray_transforms, normals = _make_lazy_cuda_func(func_name)(
             means,
             quats,
             scales,
@@ -1984,6 +1994,7 @@ class _FullyFusedProjection2DGS(torch.autograd.Function):
         ctx.width = width
         ctx.height = height
         ctx.eps2d = eps2d
+        ctx.camera_model = camera_model
 
         return radii, means2d, depths, ray_transforms, normals
 
@@ -2002,9 +2013,16 @@ class _FullyFusedProjection2DGS(torch.autograd.Function):
         width = ctx.width
         height = ctx.height
         eps2d = ctx.eps2d
-        v_means, v_quats, v_scales, v_viewmats = _make_lazy_cuda_func(
-            "projection_2dgs_fused_bwd"
-        )(
+        camera_model = ctx.camera_model
+
+        if camera_model == "pinhole":
+            func_name = "projection_2dgs_fused_bwd"
+        elif camera_model == "ortho":
+            func_name = "ortho_projection_2dgs_fused_bwd"
+        else:
+            raise ValueError(f"Unsupported camera model: {camera_model}")
+
+        v_means, v_quats, v_scales, v_viewmats = _make_lazy_cuda_func(func_name)(
             means,
             quats,
             scales,
@@ -2044,7 +2062,6 @@ class _FullyFusedProjection2DGS(torch.autograd.Function):
             None,
         )
 
-
 class _FullyFusedProjectionPacked2DGS(torch.autograd.Function):
     """Projects Gaussians to 2D. Return packed tensors."""
 
@@ -2062,7 +2079,17 @@ class _FullyFusedProjectionPacked2DGS(torch.autograd.Function):
         far_plane: float,
         radius_clip: float,
         sparse_grad: bool,
+        camera_model: Literal["pinhole", "ortho"] = "pinhole",
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    
+        if camera_model == "pinhole":
+            func_name = "projection_2dgs_packed_fwd"
+        elif camera_model == "ortho":
+            # func_name = "ortho_projection_2dgs_packed_fwd"
+            raise ValueError(f"Ortho camera model is not supported in packed mode currently.")
+        else:
+            raise ValueError(f"Unsupported camera model: {camera_model}")
+        
         (
             indptr,
             batch_ids,
@@ -2073,7 +2100,7 @@ class _FullyFusedProjectionPacked2DGS(torch.autograd.Function):
             depths,
             ray_transforms,
             normals,
-        ) = _make_lazy_cuda_func("projection_2dgs_packed_fwd")(
+        ) = _make_lazy_cuda_func(func_name)(
             means,
             quats,
             scales,
@@ -2099,6 +2126,7 @@ class _FullyFusedProjectionPacked2DGS(torch.autograd.Function):
         ctx.width = width
         ctx.height = height
         ctx.sparse_grad = sparse_grad
+        ctx.camera_model = camera_model
 
         return (
             batch_ids,
@@ -2137,10 +2165,17 @@ class _FullyFusedProjectionPacked2DGS(torch.autograd.Function):
         width = ctx.width
         height = ctx.height
         sparse_grad = ctx.sparse_grad
+        camera_model = ctx.camera_model
 
-        v_means, v_quats, v_scales, v_viewmats = _make_lazy_cuda_func(
-            "projection_2dgs_packed_bwd"
-        )(
+        if camera_model == "pinhole":
+            func_name = "projection_2dgs_packed_bwd"
+        elif camera_model == "ortho":
+            # func_name = "ortho_projection_2dgs_packed_bwd"
+            raise ValueError("Ortho camera model is not supported in packed mode currently.")
+        else:
+            raise ValueError(f"Unsupported camera model: {camera_model}")
+        
+        v_means, v_quats, v_scales, v_viewmats = _make_lazy_cuda_func(func_name)(
             means,
             quats,
             scales,
@@ -2236,6 +2271,7 @@ def rasterize_to_pixels_2dgs(
     packed: bool = False,
     absgrad: bool = False,
     distloss: bool = False,
+    camera_model: Literal["pinhole", "ortho"] = "pinhole",
 ) -> Tuple[Tensor, Tensor]:
     """Rasterize Gaussians to pixels.
 
@@ -2341,6 +2377,7 @@ def rasterize_to_pixels_2dgs(
         flatten_ids.contiguous(),
         absgrad,
         distloss,
+        camera_model
     )
 
     if padded_channels > 0:
@@ -2365,6 +2402,7 @@ def rasterize_to_indices_in_range_2dgs(
     tile_size: int,
     isect_offsets: Tensor,
     flatten_ids: Tensor,
+    camera_model: Literal["pinhole", "ortho"] = "pinhole",
 ) -> Tuple[Tensor, Tensor, Tensor]:
     """Rasterizes a batch of Gaussians to images but only returns the indices.
 
@@ -2418,7 +2456,14 @@ def rasterize_to_indices_in_range_2dgs(
         tile_width * tile_size >= image_width
     ), f"Assert Failed: {tile_width} * {tile_size} >= {image_width}"
 
-    out_gauss_ids, out_indices = _make_lazy_cuda_func("rasterize_to_indices_2dgs")(
+    if camera_model == "pinhole":
+        func_name = "rasterize_to_indices_2dgs"
+    elif camera_model == "ortho":
+        func_name = "rasterize_to_indices_ortho_2dgs"
+    else:
+        raise ValueError(f"Unsupported camera model: {camera_model}")
+
+    out_gauss_ids, out_indices = _make_lazy_cuda_func(func_name)(
         range_start,
         range_end,
         transmittances.contiguous(),
@@ -2457,7 +2502,16 @@ class _RasterizeToPixels2DGS(torch.autograd.Function):
         flatten_ids: Tensor,
         absgrad: bool,
         distloss: bool,
+        camera_model: Literal["pinhole", "ortho"] = "pinhole",
     ) -> Tuple[Tensor, Tensor]:
+        
+        if camera_model == "pinhole":
+            func_name = "rasterize_to_pixels_2dgs_fwd"
+        elif camera_model == "ortho":
+            func_name = "rasterize_to_pixels_ortho_2dgs_fwd"
+        else:
+            raise ValueError(f"Unsupported camera model: {camera_model}")
+        
         (
             render_colors,
             render_alphas,
@@ -2466,7 +2520,7 @@ class _RasterizeToPixels2DGS(torch.autograd.Function):
             render_median,
             last_ids,
             median_ids,
-        ) = _make_lazy_cuda_func("rasterize_to_pixels_2dgs_fwd")(
+        ) = _make_lazy_cuda_func(func_name)(
             means2d,
             ray_transforms,
             colors,
@@ -2502,6 +2556,7 @@ class _RasterizeToPixels2DGS(torch.autograd.Function):
         ctx.tile_size = tile_size
         ctx.absgrad = absgrad
         ctx.distloss = distloss
+        ctx.camera_model = camera_model
 
         # double to float
         render_alphas = render_alphas.float()
@@ -2543,6 +2598,14 @@ class _RasterizeToPixels2DGS(torch.autograd.Function):
         height = ctx.height
         tile_size = ctx.tile_size
         absgrad = ctx.absgrad
+        camera_model = ctx.camera_model
+
+        if camera_model == "pinhole":
+            func_name = "rasterize_to_pixels_2dgs_bwd"
+        elif camera_model == "ortho":
+            func_name = "rasterize_to_pixels_ortho_2dgs_bwd"
+        else:
+            raise ValueError(f"Unsupported camera model: {camera_model}")
 
         (
             v_means2d_abs,
@@ -2552,7 +2615,7 @@ class _RasterizeToPixels2DGS(torch.autograd.Function):
             v_opacities,
             v_normals,
             v_densify,
-        ) = _make_lazy_cuda_func("rasterize_to_pixels_2dgs_bwd")(
+        ) = _make_lazy_cuda_func(func_name)(
             means2d,
             ray_transforms,
             colors,

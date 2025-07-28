@@ -1290,6 +1290,7 @@ def rasterization_2dgs(
     absgrad: bool = False,
     distloss: bool = False,
     depth_mode: Literal["expected", "median"] = "expected",
+    camera_model: Literal["pinhole", "ortho"] = "pinhole",
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Dict]:
     """Rasterize a set of 2D Gaussians (N) to a batch of image planes (C).
 
@@ -1454,6 +1455,7 @@ def rasterization_2dgs(
         radius_clip,
         packed,
         sparse_grad,
+        camera_model
     )
 
     if packed:
@@ -1567,6 +1569,7 @@ def rasterization_2dgs(
         packed=packed,
         absgrad=absgrad,
         distloss=distloss,
+        camera_model=camera_model
     )
     render_normals_from_depth = None
     if render_mode in ["ED", "RGB+ED"]:
