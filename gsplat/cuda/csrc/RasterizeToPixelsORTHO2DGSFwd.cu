@@ -24,12 +24,11 @@ __global__ void rasterize_to_pixels_ortho_2dgs_fwd_kernel(
         *__restrict__ means2d, // Projected Gaussian means. [..., N, 2] if
                                // packed is False, [nnz, 2] if packed is True.
     const scalar_t
-        *__restrict__ ray_transforms, // transformation matrices that transforms
+        *__restrict__ M_i2u, // transformation matrices that transforms
                                       // xy-planes in pixel spaces into splat
                                       // coordinates. [..., N, 3, 3] if packed is
                                       // False, [nnz, channels] if packed is
-                                      // True. This is (KWH)^{-1} in the paper
-                                      // (takes screen [x,y] and map to [u,v])
+                                      // True. 
     const scalar_t *__restrict__ colors,    // [..., N, CDIM] or [nnz, CDIM]  //
                                             // Gaussian colors or ND features.
     const scalar_t *__restrict__ opacities, // [..., N] or [nnz] // Gaussian
@@ -185,8 +184,8 @@ __global__ void rasterize_to_pixels_ortho_2dgs_fwd_kernel(
         reinterpret_cast<vec3 *>(&xy_opacity_batch[block_size]); // [block_size]
     vec3 *v_Ms_batch =
         reinterpret_cast<vec3 *>(&u_Ms_batch[block_size]); // [block_size]
-    vec3 *w_Ms_batch =
-        reinterpret_cast<vec3 *>(&v_Ms_batch[block_size]); // [block_size]
+    // vec3 *w_Ms_batch =
+    //     reinterpret_cast<vec3 *>(&v_Ms_batch[block_size]); // [block_size]
 
     // current visibility left to render
     // transmittance is gonna be used in the backward pass which requires a high
@@ -248,20 +247,20 @@ __global__ void rasterize_to_pixels_ortho_2dgs_fwd_kernel(
             const float opac = opacities[g];
             xy_opacity_batch[tr] = {xy.x, xy.y, opac};
             u_Ms_batch[tr] = {
-                ray_transforms[g * 9],
-                ray_transforms[g * 9 + 1],
-                ray_transforms[g * 9 + 2]
+                M_i2u[g * 9],
+                M_i2u[g * 9 + 1],
+                M_i2u[g * 9 + 2]
             };
             v_Ms_batch[tr] = {
-                ray_transforms[g * 9 + 3],
-                ray_transforms[g * 9 + 4],
-                ray_transforms[g * 9 + 5]
+                M_i2u[g * 9 + 3],
+                M_i2u[g * 9 + 4],
+                M_i2u[g * 9 + 5]
             };
-            w_Ms_batch[tr] = {
-                ray_transforms[g * 9 + 6],
-                ray_transforms[g * 9 + 7],
-                ray_transforms[g * 9 + 8]
-            }; // THIS SHOULD BE 0,0,1
+            // w_Ms_batch[tr] = {
+            //     M_i2u[g * 9 + 6],
+            //     M_i2u[g * 9 + 7],
+            //     M_i2u[g * 9 + 8]
+            // }; // THIS SHOULD BE 0,0,1
         }
 
         // wait for other threads to collect the gaussians in batch
@@ -282,10 +281,10 @@ __global__ void rasterize_to_pixels_ortho_2dgs_fwd_kernel(
          * 
          *    where M_u, M_v, M_w are rows of the Ray transform
          *
-         * 4. Evaluate gaussian kernel:
+         * 2. Evaluate gaussian kernel:
          *    G_i = exp(-(u^2 + v^2)/2)
          *
-         * 5. Accumulate color:
+         * 3. Accumulate color:
          *    p_xy += alpha_i * c_i * G_i * prod(1 - alpha_j * G_j)
          *
          * This method efficiently computes the point of intersection and
@@ -409,7 +408,7 @@ template <uint32_t CDIM>
 void launch_rasterize_to_pixels_ortho_2dgs_fwd_kernel(
     // Gaussian parameters
     const at::Tensor means2d,        // [..., N, 2] or [nnz, 2]
-    const at::Tensor ray_transforms, // [..., N, 3, 3] or [nnz, 3, 3]
+    const at::Tensor M_i2u, // [..., N, 3, 3] or [nnz, 3, 3]
     const at::Tensor colors,         // [..., N, channels] or [nnz, channels]
     const at::Tensor opacities,      // [..., N]  or [nnz]
     const at::Tensor normals,        // [..., N, 3] or [nnz, 3]
@@ -470,7 +469,7 @@ void launch_rasterize_to_pixels_ortho_2dgs_fwd_kernel(
             n_isects,
             packed,
             reinterpret_cast<vec2 *>(means2d.data_ptr<float>()),
-            ray_transforms.data_ptr<float>(),
+            M_i2u.data_ptr<float>(),
             colors.data_ptr<float>(),
             opacities.data_ptr<float>(),
             normals.data_ptr<float>(),
@@ -500,7 +499,7 @@ void launch_rasterize_to_pixels_ortho_2dgs_fwd_kernel(
 #define __INS__(CDIM)                                                          \
     template void launch_rasterize_to_pixels_ortho_2dgs_fwd_kernel<CDIM>(            \
         const at::Tensor means2d,                                              \
-        const at::Tensor ray_transforms,                                       \
+        const at::Tensor M_i2u,                                       \
         const at::Tensor colors,                                               \
         const at::Tensor opacities,                                            \
         const at::Tensor normals,                                              \

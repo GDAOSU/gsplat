@@ -88,7 +88,6 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
     scalar_t *__restrict__ v_normals,        // [..., N, 3] or [nnz, 3]
     scalar_t *__restrict__ v_densify
 ) {
-    //TODO(SXS): Need update
     /**
      * ==============================
      * Set up the thread blocks
@@ -291,11 +290,11 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
                 ray_transforms[g * 9 + 4],
                 ray_transforms[g * 9 + 5]
             };
-            w_Ms_batch[tr] = {
-                ray_transforms[g * 9 + 6],
-                ray_transforms[g * 9 + 7],
-                ray_transforms[g * 9 + 8]
-            };
+            // w_Ms_batch[tr] = {
+            //     ray_transforms[g * 9 + 6],
+            //     ray_transforms[g * 9 + 7],
+            //     ray_transforms[g * 9 + 8]
+            // }; // THIS SHOULD BE 0,0,1
 #pragma unroll
             for (uint32_t k = 0; k < CDIM; ++k) {
                 rgbs_batch[tr * CDIM + k] = colors[g * CDIM + k];
@@ -343,10 +342,10 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
             vec2 s;   // normalized point of intersection on the uv, per pixel
             vec2 d;   // position on uv plane with respect to the primitive
                       // center, per pixel
-            vec3 h_u; // homogeneous plane parameter for us, per pixel
-            vec3 h_v; // homogeneous plane parameter for vs, per pixel
-            vec3 ray_cross; // ray cross product, the ray of plane intersection,
-                            // per pixel
+            // vec3 h_u; // homogeneous plane parameter for us, per pixel
+            // vec3 h_v; // homogeneous plane parameter for vs, per pixel
+            // vec3 ray_cross; // ray cross product, the ray of plane intersection,
+            //                 // per pixel
             vec3 w_M; // depth component of the ray transform matrix, per pixel
 
             /**
@@ -362,17 +361,12 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
                 const vec3 u_M = u_Ms_batch[t];
                 const vec3 v_M = v_Ms_batch[t];
 
-                w_M = w_Ms_batch[t];
+                // w_M = w_Ms_batch[t];
+                
+                const float u = px * u_M.x + py * u_M.y + u_M.z;
+                const float v = px * v_M.x + py * v_M.y + v_M.z;
 
-                h_u = px * w_M - u_M;
-                h_v = py * w_M - v_M;
-
-                ray_cross = glm::cross(h_u, h_v);
-
-                // no ray_crossion
-                if (ray_cross.z == 0.0)
-                    valid = false;
-                s = {ray_cross.x / ray_cross.z, ray_cross.y / ray_cross.z};
+                s = {u, v};
 
                 // GAUSSIAN KERNEL EVALUATION
                 gauss_weight_3d = s.x * s.x + s.y * s.y;
@@ -416,7 +410,7 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
             // ray transform gradients
             vec3 v_u_M_local = {0.f, 0.f, 0.f};
             vec3 v_v_M_local = {0.f, 0.f, 0.f};
-            vec3 v_w_M_local = {0.f, 0.f, 0.f};
+            // vec3 v_w_M_local = {0.f, 0.f, 0.f}; // SUPPORTED TO BE CONSTANT
 
             // 2D mean gradients, used if 2d gaussian weight is applied
             vec2 v_xy_local = {0.f, 0.f};
@@ -533,7 +527,6 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
                  * ==================================================
                  */
                 if (opac * vis <= 0.999f) {
-                    float v_depth = 0.f;
                     // d(a_i * G_i) / d(G_i) = a_i
                     const float v_G = opac * v_alpha;
 
@@ -544,32 +537,19 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
                         // derivative of G_i w.r.t. ray-primitive intersection
                         // uv coordinates
                         const vec2 v_s = {
-                            v_G * -vis * s.x + v_depth * w_M.x,
-                            v_G * -vis * s.y + v_depth * w_M.y
+                            v_G * -vis * s.x, // grad u
+                            v_G * -vis * s.y  // grad v
                         };
 
                         // backward through the projective transform
-                        // @see rasterize_to_pixels_2dgs_fwd.cu to understand
+                        // @see rasterize_to_pixels_ortho_2dgs_fwd.cu to understand
                         // what is going on here
-                        const vec3 v_z_w_M = {s.x, s.y, 1.0};
-                        const float v_sx_pz = v_s.x / ray_cross.z;
-                        const float v_sy_pz = v_s.y / ray_cross.z;
-                        const vec3 v_ray_cross = {
-                            v_sx_pz, v_sy_pz, -(v_sx_pz * s.x + v_sy_pz * s.y)
-                        };
-                        const vec3 v_h_u = glm::cross(h_v, v_ray_cross);
-                        const vec3 v_h_v = glm::cross(v_ray_cross, h_u);
 
                         // derivative of ray-primitive intersection uv
                         // coordinates w.r.t. transformation (geometry)
                         // coefficients
-                        v_u_M_local = {-v_h_u.x, -v_h_u.y, -v_h_u.z};
-                        v_v_M_local = {-v_h_v.x, -v_h_v.y, -v_h_v.z};
-                        v_w_M_local = {
-                            px * v_h_u.x + py * v_h_v.x + v_depth * v_z_w_M.x,
-                            px * v_h_u.y + py * v_h_v.y + v_depth * v_z_w_M.y,
-                            px * v_h_u.z + py * v_h_v.z + v_depth * v_z_w_M.z
-                        };
+                        v_u_M_local = {v_s.x * px, v_s.x * py, v_s.x};
+                        v_v_M_local = {v_s.y * px, v_s.y * py, v_s.y};
 
                         // case 2: in the forward pass, the 2D gaussian
                         // projected gaussian weight is used
@@ -620,7 +600,7 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
             warpSum(v_xy_local, warp);
             warpSum(v_u_M_local, warp);
             warpSum(v_v_M_local, warp);
-            warpSum(v_w_M_local, warp);
+
             if (v_means2d_abs != nullptr) {
                 warpSum(v_xy_abs_local, warp);
             }
@@ -653,9 +633,9 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
                 gpuAtomicAdd(v_ray_transforms_ptr + 3, v_v_M_local.x);
                 gpuAtomicAdd(v_ray_transforms_ptr + 4, v_v_M_local.y);
                 gpuAtomicAdd(v_ray_transforms_ptr + 5, v_v_M_local.z);
-                gpuAtomicAdd(v_ray_transforms_ptr + 6, v_w_M_local.x);
-                gpuAtomicAdd(v_ray_transforms_ptr + 7, v_w_M_local.y);
-                gpuAtomicAdd(v_ray_transforms_ptr + 8, v_w_M_local.z);
+                // gpuAtomicAdd(v_ray_transforms_ptr + 6, v_w_M_local.x);
+                // gpuAtomicAdd(v_ray_transforms_ptr + 7, v_w_M_local.y);
+                // gpuAtomicAdd(v_ray_transforms_ptr + 8, v_w_M_local.z);
 
                 float *v_xy_ptr = (float *)(v_means2d) + 2 * g;
                 gpuAtomicAdd(v_xy_ptr, v_xy_local.x);
@@ -671,12 +651,13 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
             }
 
             if (valid) {
+                // TODO (SXS): What is this for?
                 float *v_densify_ptr = (float *)(v_densify) + 2 * g;
                 float *v_ray_transforms_ptr =
                     (float *)(v_ray_transforms) + 9 * g;
-                float depth = w_M.z;
-                v_densify_ptr[0] = v_ray_transforms_ptr[2] * depth;
-                v_densify_ptr[1] = v_ray_transforms_ptr[5] * depth;
+
+                v_densify_ptr[0] = v_ray_transforms_ptr[2];
+                v_densify_ptr[1] = v_ray_transforms_ptr[5];
             }
         }
     }

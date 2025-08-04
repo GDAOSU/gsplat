@@ -2667,4 +2667,5 @@ class _RasterizeToPixels2DGS(torch.autograd.Function):
             None,
             None,
             None,
+            None,
         )

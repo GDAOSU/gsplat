@@ -18,7 +18,7 @@ __global__ void rasterize_to_indices_ortho_2dgs_kernel(
     const uint32_t N,
     const uint32_t n_isects,
     const vec2 *__restrict__ means2d,            // [..., N, 2]
-    const scalar_t *__restrict__ ray_transforms, // [..., N, 3, 3]
+    const scalar_t *__restrict__ M_i2u, // [..., N, 3, 3]
     const scalar_t *__restrict__ opacities,      // [..., N]
     const uint32_t image_width,
     const uint32_t image_height,
@@ -34,7 +34,6 @@ __global__ void rasterize_to_indices_ortho_2dgs_kernel(
     int64_t *__restrict__ gaussian_ids,       // [n_elems]
     int64_t *__restrict__ pixel_ids           // [n_elems]
 ) {
-    //TODO(SXS): Need update
     // each thread draws one pixel, but also timeshares caching gaussians in a
     // shared tile
 
@@ -91,8 +90,8 @@ __global__ void rasterize_to_indices_ortho_2dgs_kernel(
         reinterpret_cast<vec3 *>(&xy_opacity_batch[block_size]); // [block_size]
     vec3 *v_Ms_batch =
         reinterpret_cast<vec3 *>(&u_Ms_batch[block_size]); // [block_size]
-    vec3 *w_Ms_batch =
-        reinterpret_cast<vec3 *>(&v_Ms_batch[block_size]); // [block_size]
+    // vec3 *w_Ms_batch =
+    //     reinterpret_cast<vec3 *>(&v_Ms_batch[block_size]); // [block_size]
 
     // current visibility left to render
     // transmittance is gonna be used in the backward pass which requires a high
@@ -128,19 +127,14 @@ __global__ void rasterize_to_indices_ortho_2dgs_kernel(
             const float opac = opacities[g];
             xy_opacity_batch[tr] = {xy.x, xy.y, opac};
             u_Ms_batch[tr] = {
-                ray_transforms[g * 9],
-                ray_transforms[g * 9 + 1],
-                ray_transforms[g * 9 + 2]
+                M_i2u[g * 9],
+                M_i2u[g * 9 + 1],
+                M_i2u[g * 9 + 2]
             };
             v_Ms_batch[tr] = {
-                ray_transforms[g * 9 + 3],
-                ray_transforms[g * 9 + 4],
-                ray_transforms[g * 9 + 5]
-            };
-            w_Ms_batch[tr] = {
-                ray_transforms[g * 9 + 6],
-                ray_transforms[g * 9 + 7],
-                ray_transforms[g * 9 + 8]
+                M_i2u[g * 9 + 3],
+                M_i2u[g * 9 + 4],
+                M_i2u[g * 9 + 5]
             };
         }
 
@@ -150,24 +144,16 @@ __global__ void rasterize_to_indices_ortho_2dgs_kernel(
         // process gaussians in the current batch for this pixel
         uint32_t batch_size = min(block_size, isect_range_end - batch_start);
         for (uint32_t t = 0; (t < batch_size) && !done; ++t) {
-            const vec3 u_M = u_Ms_batch[t];
-            const vec3 v_M = v_Ms_batch[t];
-            const vec3 w_M = w_Ms_batch[t];
             const vec3 xy_opac = xy_opacity_batch[t];
             const float opac = xy_opac.z;
 
-            const vec3 h_u = px * w_M - u_M;
-            const vec3 h_v = py * w_M - v_M;
+            const vec3 u_M = u_Ms_batch[t];
+            const vec3 v_M = v_Ms_batch[t];
 
-            const vec3 ray_cross = glm::cross(h_u, h_v);
-
-            if (ray_cross.z == 0.0)
-                continue;
-
-            const vec2 s = {
-                ray_cross.x / ray_cross.z, ray_cross.y / ray_cross.z
-            };
-            const float gauss_weight_3d = s.x * s.x + s.y * s.y;
+            const float u = px * u_M.x + py * u_M.y + u_M.z;
+            const float v = px * v_M.x + py * v_M.y + v_M.z;
+            
+            const float gauss_weight_3d = u*u + v*v;
 
             // Low pass filter
             const vec2 d = {xy_opac.x - px, xy_opac.y - py};
@@ -218,7 +204,7 @@ void launch_rasterize_to_indices_ortho_2dgs_kernel(
     const at::Tensor transmittances, // [..., image_height, image_width]
     // Gaussian parameters
     const at::Tensor means2d,        // [..., N, 2]
-    const at::Tensor ray_transforms, // [..., N, 3, 3]
+    const at::Tensor M_i2u, // [..., N, 3, 3]
     const at::Tensor opacities,      // [..., N]
     // image size
     const uint32_t image_width,
@@ -273,7 +259,7 @@ void launch_rasterize_to_indices_ortho_2dgs_kernel(
             N,
             n_isects,
             reinterpret_cast<vec2 *>(means2d.data_ptr<float>()),
-            ray_transforms.data_ptr<float>(),
+            M_i2u.data_ptr<float>(),
             opacities.data_ptr<float>(),
             image_width,
             image_height,
