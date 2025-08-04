@@ -1513,7 +1513,25 @@ def rasterization_2dgs(
     # else:
     #     if packed:
     #         colors = colors.view(B, C, N, -1)[batch_ids, camera_ids, gaussian_ids, :]
-    if sh_degree is not None:  # SH coefficients
+    if sh_degree is None:
+        # Colors are post-activation values, with shape [..., N, D] or [..., C, N, D]
+        if packed:
+            if colors.dim() == num_batch_dims + 2:
+                # Turn [..., N, D] into [nnz, D]
+                colors = colors.view(B, N, -1)[batch_ids, gaussian_ids]
+            else:
+                # Turn [..., C, N, D] into [nnz, D]
+                colors = colors.view(B, C, N, -1)[batch_ids, camera_ids, gaussian_ids]
+        else:
+            if colors.dim() == num_batch_dims + 2:
+                # Turn [..., N, D] into [..., C, N, D]
+                colors = torch.broadcast_to(
+                    colors[..., None, :, :], batch_dims + (C, N, -1)
+                )
+            else:
+                # colors is already [..., C, N, D]
+                pass
+    else:  # SH coefficients
         camtoworlds = torch.inverse(viewmats)
         if packed:
             dirs = means[..., gaussian_ids, :] - camtoworlds[..., camera_ids, :3, 3]

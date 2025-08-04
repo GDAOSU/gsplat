@@ -80,6 +80,7 @@ class SimpleTrainer:
         lr: float = 0.01,
         save_imgs: bool = False,
         model_type: Literal["3dgs", "2dgs"] = "3dgs",
+        camera_model: Literal["pinhole", "ortho"] = "pinhole",
     ):
         optimizer = optim.Adam(
             [self.rgbs, self.means, self.scales, self.opacities, self.quats], lr
@@ -115,6 +116,7 @@ class SimpleTrainer:
                 self.W,
                 self.H,
                 packed=False,
+                camera_model=camera_model,
             )[0]
             out_img = renders[0]
             torch.cuda.synchronize()
@@ -167,6 +169,7 @@ def main(
     iterations: int = 1000,
     lr: float = 0.01,
     model_type: Literal["3dgs", "2dgs"] = "3dgs",
+    camera_model: Literal["pinhole", "ortho"] = "pinhole",
 ) -> None:
     if img_path:
         gt_image = image_path_to_tensor(img_path)
@@ -182,6 +185,7 @@ def main(
         lr=lr,
         save_imgs=save_imgs,
         model_type=model_type,
+        camera_model=camera_model,
     )
 
 

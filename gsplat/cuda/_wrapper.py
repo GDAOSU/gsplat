@@ -2314,7 +2314,7 @@ def rasterize_to_pixels_2dgs(
         N = means2d.size(-2)
         assert means2d.shape == image_dims + (N, 2), means2d.shape
         assert ray_transforms.shape == image_dims + (N, 3, 3), ray_transforms.shape
-        assert colors.shape[:-2] == image_dims, colors.shape
+        assert colors.shape == image_dims + (N, channels), colors.shape
         assert opacities.shape == image_dims + (N,), opacities.shape
     if backgrounds is not None:
         assert backgrounds.shape == image_dims + (channels,), backgrounds.shape
