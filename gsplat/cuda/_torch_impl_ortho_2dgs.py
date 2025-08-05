@@ -34,7 +34,7 @@ def _fully_fused_ortho_projection_2dgs(
     assert quats.shape == batch_dims + (N, 4), quats.shape
     assert scales.shape == batch_dims + (N, 3), scales.shape
     assert viewmats.shape == batch_dims + (C, 4, 4), viewmats.shape
-    assert Ks.shape == batch_dims + (C, 3, 3), Ks.shape # [..., C, 3, 3]
+    assert Ks.shape == batch_dims + (C, 3, 3), Ks.shape  # [..., C, 3, 3]
 
     A33 = viewmats[..., :3, :3]  # [..., C, 3, 3]
     b31 = viewmats[..., :3, 3]  # [..., C, 3]
@@ -42,19 +42,19 @@ def _fully_fused_ortho_projection_2dgs(
         [scales[..., :2], torch.ones(batch_dims + (N, 1), device=means.device)], dim=-1
     )  # [..., N, 3]
     RS33 = _quat_scale_to_matrix(quats, scales2d)
-    ARS22 = torch.einsum("...cij,...njk->...cnik", A33[...,:2,:3], RS33[...,:3,:2])  # [..., C, N, 2, 2]
-    KARS22 = torch.einsum("...cij,...cnjk->...cnik", Ks[...,:2,:2], ARS22[...,:2,:2])  # [..., C, N, 2, 2]
+    ARS22 = torch.einsum("...cij,...njk->...cnik", A33[..., :2, :3], RS33[..., :3, :2])  # [..., C, N, 2, 2]
+    KARS22 = torch.einsum("...cij,...cnjk->...cnik", Ks[..., :2, :2], ARS22[..., :2, :2])  # [..., C, N, 2, 2]
 
     p_camera = torch.einsum("...cij,...nj->...cni", A33, means) + b31[..., None, :]  # [..., C, N, 3]
     p_image = torch.einsum("...cij,...cnj->...cni", Ks[..., :2, :2], p_camera[..., :2]) + Ks[..., :2, 2].unsqueeze(-2)
 
     # compute normals
     normals_world = RS33[..., 2].unsqueeze(-3).expand_as(p_camera)  # [..., C, N, 3] # in world frame
+    normals_camera_unnorm = torch.einsum("...cij,...cnj->...cni", A33, normals_world)  # [..., C, N, 3] # in camera frame
 
-    # cos = -normals.reshape((-1, 1, 3)) @ means_c.reshape((-1, 3, 1))
-    # cos = cos.reshape(batch_dims + (C, N, 1))
-    # multiplier = torch.where(cos > 0, torch.tensor(1.0), torch.tensor(-1.0))
-    # normals *= multiplier
+    # Ensure the normals point towards the camera, last dimension should be negative
+    normals_multiplier = -torch.sign(normals_camera_unnorm[..., 2:]) / torch.linalg.norm(normals_camera_unnorm, dim=-1, keepdim=True)  # [..., C, N, 1]
+    normals_camera = normals_camera_unnorm * normals_multiplier
 
     # ray transform matrix, omitting the z rotation
     M_u2i = torch.zeros(batch_dims + (C, N, 3, 3), device=means.device)
@@ -81,11 +81,10 @@ def _fully_fused_ortho_projection_2dgs(
 
     valid = (depths > near_plane) & (depths < far_plane)
 
-
     radius[~valid] = 0.0
 
     # Remove small radii
-    small_radius = (radius[..., 0] <= eps) & (radius[..., 1] <= eps)  
+    small_radius = (radius[..., 0] <= eps) & (radius[..., 1] <= eps)
     radius[small_radius] = 0.0
 
     inside = (
@@ -97,7 +96,7 @@ def _fully_fused_ortho_projection_2dgs(
     radius[~inside] = 0.0
     radii = radius.int()
 
-    return radii, means2d, depths, M_i2u, normals_world
+    return radii, means2d, depths, M_i2u, normals_camera
 
 
 def accumulate_2dgs(
@@ -166,8 +165,8 @@ def accumulate_2dgs(
 
     M = M_i2u[image_ids, gaussian_ids]  # [M, 3, 3]
 
-    u = M[...,0,0] * pixel_ids_x + M[...,0,1] * pixel_ids_y + M[...,0,2]
-    v = M[...,1,0] * pixel_ids_x + M[...,1,1] * pixel_ids_y + M[...,1,2]
+    u = M[..., 0, 0] * pixel_ids_x + M[..., 0, 1] * pixel_ids_y + M[..., 0, 2]
+    v = M[..., 1, 0] * pixel_ids_x + M[..., 1, 1] * pixel_ids_y + M[..., 1, 2]
 
     sigmas_3d = u**2 + v**2  # [M]
     sigmas_2d = 2 * (deltas[..., 0] ** 2 + deltas[..., 1] ** 2)
@@ -177,9 +176,8 @@ def accumulate_2dgs(
 
     indices = image_ids * image_height * image_width + pixel_ids
     total_pixels = I * image_height * image_width
-    
-    weights, trans = render_weight_from_alpha(alphas, ray_indices=indices, n_rays=total_pixels)
 
+    weights, trans = render_weight_from_alpha(alphas, ray_indices=indices, n_rays=total_pixels)
 
     renders = accumulate_along_rays(
         weights,
@@ -282,7 +280,7 @@ def _rasterize_to_pixels_ortho_2dgs(
             tile_size,
             isect_offsets,
             flatten_ids,
-            "ortho"
+            "ortho",
         )  # [M], [M]
         if len(gs_ids) == 0:
             break

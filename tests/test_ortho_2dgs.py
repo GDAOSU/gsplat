@@ -88,10 +88,10 @@ def test_ortho_projection_2dgs(test_data, batch_dims: Tuple[int, ...]):
     # radii is integer so we allow for 1 unit difference
     valid = ((radii > 0) & (_radii > 0)).all(dim=-1)
 
-    print('-- cuda impl radii')
-    print(radii)
-    print('-- python impl radii')
-    print(_radii)
+    # print('-- cuda impl radii')
+    # print(radii)
+    # print('-- python impl radii')
+    # print(_radii)
 
     torch.testing.assert_close(radii, _radii, rtol=1e-3, atol=1)
     torch.testing.assert_close(means2d[valid], _means2d[valid], rtol=1e-4, atol=1e-4)

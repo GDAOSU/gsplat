@@ -90,7 +90,7 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
      */
 
     // shift pointers to the current camera and gaussian
-    vec3 p_k = glm::make_vec3(
+    const vec3 p_k = glm::make_vec3(
         means + bid * N * 3 + gid * 3
     ); // find the mean of the primitive this thread is responsible for
     viewmats_ptr += bid * C * 16 + cid * 16; // step 4x4 camera matrix
@@ -98,7 +98,7 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
 
     // linear coefficient of the 2x3 affine camera. Explicit Transpose
     // glm is column-major but input is row-major
-    mat3 A33 = mat3(
+    const mat3 A33 = mat3(
         viewmats_ptr[0],
         viewmats_ptr[4],
         viewmats_ptr[8], // 1st column
@@ -110,10 +110,10 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
         viewmats_ptr[10] // 3rd column
     );
     // offset of affine camera, make the last component 1
-    vec3 b31 = vec3(viewmats_ptr[3], viewmats_ptr[7], viewmats_ptr[11]);
+    const vec3 b31 = vec3(viewmats_ptr[3], viewmats_ptr[7], viewmats_ptr[11]);
 
     // transform Gaussian center to camera space
-    vec3 p_camera = A33 * p_k + b31;
+    const vec3 p_camera = A33 * p_k + b31;
 
     // return this thread for overly small primitives
     if (p_camera.z <= near_plane || p_camera.z >= far_plane) {
@@ -122,10 +122,10 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
         return;
     }
 
-    scalar_t fx = Ks_ptr[0];
-    scalar_t fy = Ks_ptr[4];
-    scalar_t cx = Ks_ptr[2];
-    scalar_t cy = Ks_ptr[5];
+    const scalar_t fx = Ks_ptr[0];
+    const scalar_t fy = Ks_ptr[4];
+    const scalar_t cx = Ks_ptr[2];
+    const scalar_t cy = Ks_ptr[5];
 
     const vec2 p_image(fx * p_camera.x + cx, fy * p_camera.y + cy);
 
@@ -133,17 +133,17 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
     scales_ptr += bid * N * 3 + gid * 3;
 
     // The third column is the surface normal
-    mat3 R33 = quat_to_rotmat(glm::make_vec4(quats_ptr));
-    mat2x3 RS32(R33[0] * scales_ptr[0], R33[1] * scales_ptr[1]);
+    const mat3 R33 = quat_to_rotmat(glm::make_vec4(quats_ptr));
+    const mat2x3 RS32(R33[0] * scales_ptr[0], R33[1] * scales_ptr[1]);
 
-    mat2 ARS22 = mat2(
+    const mat2 ARS22 = mat2(
         sum(glm::row(A33, 0) * RS32[0]),
         sum(glm::row(A33, 1) * RS32[0]), // 1st column
         sum(glm::row(A33, 0) * RS32[1]),
         sum(glm::row(A33, 1) * RS32[1]) // 2nd column
     );
 
-    mat2 KARS = mat2(
+    const mat2 KARS = mat2(
         fx * ARS22[0][0],
         fy * ARS22[0][1], // 1st column
         fx * ARS22[1][0],
@@ -151,7 +151,7 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
     );
 
     // M_u2i is the inverse of the affine transformation matrix
-    mat3 M_u2i(
+    const mat3 M_u2i(
         KARS[0][0],
         KARS[0][1],
         0.0, // 1st column
@@ -163,18 +163,18 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
         1.0
     );
 
-    scalar_t det_M = glm::determinant(M_u2i);
+    const scalar_t det_M = glm::determinant(M_u2i);
     // ill-conditioned primitives will have det(M) = 0.0f, we ignore them
     if (det_M == 0.0f)
         return; // skip if the determinant is zero
 
-    mat3 M_i2u = glm::inverse(M_u2i);
+    const mat3 M_i2u = glm::inverse(M_u2i);
     /**
      * ===============================================
      * Compute AABB
      * ===============================================
      */
-    vec3 tmp_p = M_u2i * vec3(1, 1, 1);
+    const vec3 tmp_p = M_u2i * vec3(1, 1, 1);
     // ==============================================
     const float radius_x = ceil(3.33f * max(1e-2, abs(tmp_p.x - p_image.x)));
     const float radius_y = ceil(3.33f * max(1e-2, abs(tmp_p.y - p_image.y)));
@@ -195,7 +195,9 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
     }
 
     // normals dual visible
-    vec3 normal_world = R33[2]; // the normal is in world space
+    const vec3& normal_world = R33[2]; // the normal is in world space
+    vec3 normal_camera = glm::normalize(A33 * normal_world); // transform to camera space
+    normal_camera *= -glm::sign(normal_camera.z); // ensure the normal points towards the camera
 
     // write to outputs
     radii_ptr[idx * 2] = (int32_t)radius_x;
@@ -216,9 +218,9 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
     M_i2u_ptr[idx * 9 + 8] = M_i2u[2][2]; // 3rd row
 
     // primitive normals
-    normals_ptr[idx * 3] = normal_world.x;
-    normals_ptr[idx * 3 + 1] = normal_world.y;
-    normals_ptr[idx * 3 + 2] = normal_world.z;
+    normals_ptr[idx * 3] = normal_camera.x;
+    normals_ptr[idx * 3 + 1] = normal_camera.y;
+    normals_ptr[idx * 3 + 2] = normal_camera.z;
 }
 
 void launch_ortho_projection_2dgs_fused_fwd_kernel(
@@ -328,12 +330,12 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
     v_normals_ptr += idx * 3;
     v_M_i2u_ptr += idx * 9;
 
-    vec3 p_k = glm::make_vec3(means_ptr);
-    vec4 quat = glm::make_vec4(quats_ptr + bid * N * 4 + gid * 4);
-    vec2 scale = glm::make_vec2(scales_ptr + bid * N * 3 + gid * 3);
+    const vec3 p_k = glm::make_vec3(means_ptr);
+    const vec4 quat = glm::make_vec4(quats_ptr + bid * N * 4 + gid * 4);
+    const vec2 scale = glm::make_vec2(scales_ptr + bid * N * 3 + gid * 3);
 
     // Reconstruct forward pass intermediate variables
-    mat3 A33 = mat3(
+    const mat3 A33 = mat3(
         viewmats_ptr[0],
         viewmats_ptr[4],
         viewmats_ptr[8], // 1st column
@@ -345,7 +347,7 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
         viewmats_ptr[10] // 3rd column
     );
 
-    mat3x2 A23(
+    const mat3x2 A23(
         A33[0][0],
         A33[0][1], // 1st column
         A33[1][0],
@@ -355,34 +357,41 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
     );
 
     // offset of affine camera, make the last component 1
-    vec3 b31 = vec3(viewmats_ptr[3], viewmats_ptr[7], viewmats_ptr[11]);
-    vec3 p_camera = A33 * p_k + b31;
-    scalar_t fx = Ks_ptr[0];
-    scalar_t fy = Ks_ptr[4];
-    scalar_t cx = Ks_ptr[2];
-    scalar_t cy = Ks_ptr[5];
+    const vec3 b31 = vec3(viewmats_ptr[3], viewmats_ptr[7], viewmats_ptr[11]);
+    const vec3 p_camera = A33 * p_k + b31;
+    const scalar_t fx = Ks_ptr[0];
+    const scalar_t fy = Ks_ptr[4];
+    const scalar_t cx = Ks_ptr[2];
+    const scalar_t cy = Ks_ptr[5];
 
-    vec2 p_image(fx * p_camera.x + cx, fy * p_camera.y + cy);
+    const vec2 p_image(fx * p_camera.x + cx, fy * p_camera.y + cy);
 
-    mat3 R33 = quat_to_rotmat(quat);
-    mat3 S33 = mat3(scale[0], 0.0, 0.0, 0.0, scale[1], 0.0, 0.0, 0.0, 1.0);
-    mat3 RS33 = R33 * S33;
+    const mat3 R33 = quat_to_rotmat(quat);
+    const mat3 S33 = mat3(scale[0], 0.0, 0.0, 0.0, scale[1], 0.0, 0.0, 0.0, 1.0);
+    const mat3 RS33 = R33 * S33;
 
-    mat2 ARS22 = mat2(
+    // normals dual visible
+    const vec3& normal_world = R33[2]; // the normal is in world space
+    const vec3 normal_camera_unnorm = A33 * normal_world; // transform to camera space
+    const scalar_t norm_val = glm::length(normal_camera_unnorm);
+    const float inv_norm_val = 1.0f / (norm_val + 1e-6f); // avoid division by zero
+    const scalar_t normal_multiplier = -glm::sign(normal_camera_unnorm.z) * inv_norm_val;
+
+    const mat2 ARS22 = mat2(
         sum(glm::row(A33, 0) * RS33[0]),
         sum(glm::row(A33, 1) * RS33[0]),
         sum(glm::row(A33, 0) * RS33[1]),
         sum(glm::row(A33, 1) * RS33[1])
     );
 
-    mat2 KARS22 = mat2(
+    const mat2 KARS22 = mat2(
         fx * ARS22[0][0],
         fy * ARS22[0][1], // 1st column
         fx * ARS22[1][0],
         fy * ARS22[1][1] // 2nd column
     );
 
-    mat3 M_u2i = mat3(
+    const mat3 M_u2i = mat3(
         KARS22[0][0],
         KARS22[0][1],
         0.0, // 1st column
@@ -395,7 +404,7 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
     );
 
     // Load M_i2u from cache
-    mat3 M_i2u = mat3(
+    const mat3 M_i2u = mat3(
         M_i2u_ptr[0],
         M_i2u_ptr[3],
         M_i2u_ptr[6], // 1st column
@@ -408,7 +417,7 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
     );
 
     // Load input gradients
-    mat3 v_M_i2u_val = mat3(
+    const mat3 v_M_i2u_val = mat3(
         v_M_i2u_ptr[0],
         v_M_i2u_ptr[3],
         v_M_i2u_ptr[6], // 1st column
@@ -419,10 +428,10 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
         v_M_i2u_ptr[5],
         v_M_i2u_ptr[8] // 3rd column
     );                 // w.r.t. A33, b31, means, quat, scale
-    vec2 v_means2d_val =
-        vec2(v_means2d_ptr[0], v_means2d_ptr[1]); // w.r.t. A33, b31, and means
-    scalar_t v_depths_val = v_depths_ptr[0];      // w.r.t, A33, b31, and means
-    vec3 v_normals_val = glm::make_vec3(v_normals_ptr); // w.r.t. quat
+
+    vec2 v_means2d_val(v_means2d_ptr[0], v_means2d_ptr[1]); // w.r.t. A33, b31, and means
+    const scalar_t v_depths_val = v_depths_ptr[0];      // w.r.t, A33, b31, and means
+    const vec3 v_normals_val = glm::make_vec3(v_normals_ptr); // w.r.t. quat, A33
 
     /////////////////////////////
     // Initialize gradient accumulators
@@ -444,8 +453,8 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
     // STEP 2: M_u2i -> p_k_image(means2d), and accumulate with v_means2d
     // FWD: M_u2i = [  KARS22 | p_k_image ]
     //              [ 0 0 0 |     1     ]
-    v_means2d_val.x += v_M_u2i_val[2][0]; // p_k_image.x
-    v_means2d_val.y += v_M_u2i_val[2][1]; // p_k_image.y
+    v_means2d_val.x += v_M_u2i_val[2][0]; // p_image.x
+    v_means2d_val.y += v_M_u2i_val[2][1]; // p_image.y
 
     mat2 v_KARS22 = mat2(
         v_M_u2i_val[0][0],
@@ -461,11 +470,11 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
     // BWD: v_p_camera = K[:2,:2]^T * v_p_image
     vec3 v_p_camera(v_means2d_val.x * fx, v_means2d_val.y * fy, v_depths_val);
 
-    // STEP 4: p_k_camera -> p_k, A33, b31
-    // FWD: p_k_camera = A33 * p_k + b31
-    // BWD: v_p_k (aka. v_mean) = A33^T * v_p_k_camera
-    //      v_A33 = outer(v_p_k_camera, p_k)
-    //      v_b31 = v_p_k_camera
+    // STEP 4: p_camera -> p_k, A33, b31
+    // FWD: p_camera = A33 * p_k + b31
+    // BWD: v_p_k (aka. v_mean) = A33^T * v_p_camera
+    //      v_A33 = outer(v_p_camera, p_k)
+    //      v_b31 = v_p_camera
     v_mean = glm::transpose(A33) * v_p_camera;
     v_A33 += glm::outerProduct(v_p_camera, p_k);
     v_b31 += v_p_camera;
@@ -481,8 +490,27 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
         fy * v_KARS22[1][1] // 2nd column
     );
 
-    // STEP 6: ARS22 -> quat, scale, A33
-    //         v_normal -> quat
+    // STEP 6: normal_camera -> quat, A33
+    // FWD: normal_world = R33[2]
+    //      normal_camera_unnorm = A33 * normal_world
+    //      normal_cam = normal_camera_unnorm * normal_multiplier
+
+    // BWD: v_normal_multiplier = dot(v_normals_val, normal_camera_unnorm)
+    //      d(normal_multiplier)/d(norm_val) = -normal_multiplier * inv_norm_val
+    //      v_norm_val = v_normal_multiplier * (-normal_multiplier * inv_norm_val)
+    //      v_normal_camera_unnorm_a = v_normal_val * normal_multiplier
+    //      v_normal_camera_unnorm_b = (normal_camera_unnorm * inv_norm_val) * v_norm_val
+    //      v_normal_world  = A33^T * v_normal_camera_unnorm
+    //      v_A33' = outer(v_normal_camera_unnorm, normal_world)
+
+    const scalar_t v_normal_multiplier = glm::dot(v_normals_val, normal_camera_unnorm);
+    const float v_norm_val = v_normal_multiplier * (-normal_multiplier * inv_norm_val); // Chain rule from v_normal_multiplier -> inv_norm_val -> norm_val
+
+    const vec3 v_normal_camera_unnorm = v_normals_val * normal_multiplier + (normal_camera_unnorm * inv_norm_val)*v_norm_val;
+    const vec3 v_normal_world = glm::transpose(A33) * v_normal_camera_unnorm;
+    v_A33 += glm::outerProduct(v_normal_camera_unnorm, normal_world);
+
+    // STEP 7: ARS22 -> quat, scale, A33
     // FWD: ARS22 = A23 * RS32 = A23 * R33 * S32
     // BWD: v_A23 = v_ARS22 * RS32^T
     //      v_RS32 = A23^T * v_ARS22
@@ -491,18 +519,20 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
     //         -> v_s0 = R33.c0 * v_RS32.c0
     //         -> v_s1 = R33.c1 * v_RS32.c1
     //
-
-    mat3x2 v_A23 = v_ARS22 * glm::transpose(mat2x3(RS33[0], RS33[1]));
-    mat2x3 v_RS32 = glm::transpose(A23) * v_ARS22;
-    mat3 v_R33(v_RS32[0] * scale[0], v_RS32[1] * scale[1], v_normals_val);
+    const mat3x2 v_A23 = v_ARS22 * glm::transpose(mat2x3(RS33[0], RS33[1]));
+    const mat2x3 v_RS32 = glm::transpose(A23) * v_ARS22;
     v_scale[0] += sum(R33[0] * v_RS32[0]);
     v_scale[1] += sum(R33[1] * v_RS32[1]);
-    quat_to_rotmat_vjp(quat, v_R33, v_quat);
+    const mat3 v_R33(v_RS32[0] * scale[0], v_RS32[1] * scale[1], v_normal_world);
 
     // accumulate v_A33
+    #pragma unroll 
     for (int i = 0; i < 2; ++i)
+        #pragma unroll
         for (int j = 0; j < 3; ++j)
             v_A33[j][i] += v_A23[j][i];
+
+    quat_to_rotmat_vjp(quat, v_R33, v_quat);
 
     ////////////////////////////////////////////////
 
