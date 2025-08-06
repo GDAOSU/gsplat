@@ -49,12 +49,11 @@ def _fully_fused_ortho_projection_2dgs(
     p_image = torch.einsum("...cij,...cnj->...cni", Ks[..., :2, :2], p_camera[..., :2]) + Ks[..., :2, 2].unsqueeze(-2)
 
     # compute normals
-    normals_world = RS33[..., 2].unsqueeze(-3).expand_as(p_camera)  # [..., C, N, 3] # in world frame
-    normals_camera_unnorm = torch.einsum("...cij,...cnj->...cni", A33, normals_world)  # [..., C, N, 3] # in camera frame
-
-    # Ensure the normals point towards the camera, last dimension should be negative
-    normals_multiplier = -torch.sign(normals_camera_unnorm[..., 2:]) / torch.linalg.norm(normals_camera_unnorm, dim=-1, keepdim=True)  # [..., C, N, 1]
-    normals_camera = normals_camera_unnorm * normals_multiplier
+    normals_ = RS33[..., 2].unsqueeze(-3).expand_as(p_camera)  # [..., C, N, 3] # in world frame
+    cos = -normals_.reshape((-1, 1, 3)) @ p_camera.reshape((-1, 3, 1))
+    cos = cos.reshape(batch_dims + (C, N, 1))
+    multiplier = torch.where(cos > 0, torch.tensor(1.0), torch.tensor(-1.0))
+    normals = normals_ * multiplier
 
     # ray transform matrix, omitting the z rotation
     M_u2i = torch.zeros(batch_dims + (C, N, 3, 3), device=means.device)
@@ -96,7 +95,7 @@ def _fully_fused_ortho_projection_2dgs(
     radius[~inside] = 0.0
     radii = radius.int()
 
-    return radii, means2d, depths, M_i2u, normals_camera
+    return radii, means2d, depths, M_i2u, normals
 
 
 def accumulate_2dgs(

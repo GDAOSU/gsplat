@@ -195,9 +195,11 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
     }
 
     // normals dual visible
-    const vec3& normal_world = R33[2]; // the normal is in world space
-    vec3 normal_camera = glm::normalize(A33 * normal_world); // transform to camera space
-    normal_camera *= -glm::sign(normal_camera.z); // ensure the normal points towards the camera
+    vec3 normal = R33[2]; // the normal is in world space
+    // flip normal if it is pointing away from the camera
+    float multipler = glm::dot(-normal, p_camera) > 0 ? 1 : -1;
+    normal *= multipler;
+
 
     // write to outputs
     radii_ptr[idx * 2] = (int32_t)radius_x;
@@ -218,9 +220,9 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
     M_i2u_ptr[idx * 9 + 8] = M_i2u[2][2]; // 3rd row
 
     // primitive normals
-    normals_ptr[idx * 3] = normal_camera.x;
-    normals_ptr[idx * 3 + 1] = normal_camera.y;
-    normals_ptr[idx * 3 + 2] = normal_camera.z;
+    normals_ptr[idx * 3] = normal.x;
+    normals_ptr[idx * 3 + 1] = normal.y;
+    normals_ptr[idx * 3 + 2] = normal.z;
 }
 
 void launch_ortho_projection_2dgs_fused_fwd_kernel(
@@ -371,11 +373,10 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
     const mat3 RS33 = R33 * S33;
 
     // normals dual visible
-    const vec3& normal_world = R33[2]; // the normal is in world space
-    const vec3 normal_camera_unnorm = A33 * normal_world; // transform to camera space
-    const scalar_t norm_val = glm::length(normal_camera_unnorm);
-    const float inv_norm_val = 1.0f / (norm_val + 1e-6f); // avoid division by zero
-    const scalar_t normal_multiplier = -glm::sign(normal_camera_unnorm.z) * inv_norm_val;
+    const vec3& normal = R33[2]; // the normal is in world space
+    const float cos = glm::dot(-normal, p_camera);
+    const float multiplier = cos > 0 ? 1 : -1;
+
 
     const mat2 ARS22 = mat2(
         sum(glm::row(A33, 0) * RS33[0]),
@@ -490,27 +491,7 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
         fy * v_KARS22[1][1] // 2nd column
     );
 
-    // STEP 6: normal_camera -> quat, A33
-    // FWD: normal_world = R33[2]
-    //      normal_camera_unnorm = A33 * normal_world
-    //      normal_cam = normal_camera_unnorm * normal_multiplier
-
-    // BWD: v_normal_multiplier = dot(v_normals_val, normal_camera_unnorm)
-    //      d(normal_multiplier)/d(norm_val) = -normal_multiplier * inv_norm_val
-    //      v_norm_val = v_normal_multiplier * (-normal_multiplier * inv_norm_val)
-    //      v_normal_camera_unnorm_a = v_normal_val * normal_multiplier
-    //      v_normal_camera_unnorm_b = (normal_camera_unnorm * inv_norm_val) * v_norm_val
-    //      v_normal_world  = A33^T * v_normal_camera_unnorm
-    //      v_A33' = outer(v_normal_camera_unnorm, normal_world)
-
-    const scalar_t v_normal_multiplier = glm::dot(v_normals_val, normal_camera_unnorm);
-    const float v_norm_val = v_normal_multiplier * (-normal_multiplier * inv_norm_val); // Chain rule from v_normal_multiplier -> inv_norm_val -> norm_val
-
-    const vec3 v_normal_camera_unnorm = v_normals_val * normal_multiplier + (normal_camera_unnorm * inv_norm_val)*v_norm_val;
-    const vec3 v_normal_world = glm::transpose(A33) * v_normal_camera_unnorm;
-    v_A33 += glm::outerProduct(v_normal_camera_unnorm, normal_world);
-
-    // STEP 7: ARS22 -> quat, scale, A33
+    // STEP 6: ARS22 -> quat, scale, A33
     // FWD: ARS22 = A23 * RS32 = A23 * R33 * S32
     // BWD: v_A23 = v_ARS22 * RS32^T
     //      v_RS32 = A23^T * v_ARS22
@@ -523,7 +504,7 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
     const mat2x3 v_RS32 = glm::transpose(A23) * v_ARS22;
     v_scale[0] += sum(R33[0] * v_RS32[0]);
     v_scale[1] += sum(R33[1] * v_RS32[1]);
-    const mat3 v_R33(v_RS32[0] * scale[0], v_RS32[1] * scale[1], v_normal_world);
+    const mat3 v_R33(v_RS32[0] * scale[0], v_RS32[1] * scale[1], v_normals_val * multiplier);
 
     // accumulate v_A33
     #pragma unroll 
