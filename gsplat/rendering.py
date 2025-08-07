@@ -27,7 +27,7 @@ from .distributed import (
     all_to_all_int32,
     all_to_all_tensor_list,
 )
-from .utils import depth_to_normal, get_projection_matrix
+from .utils import depth_to_normal, ortho_depth_to_normal, get_projection_matrix
 
 
 def rasterization(
@@ -1480,7 +1480,7 @@ def rasterization_2dgs(
         image_ids = None
 
     densify = torch.zeros_like(
-        means2d, dtype=means.dtype, requires_grad=True, device="cuda"
+        means2d, dtype=means.dtype, requires_grad=True, device=device
     )
     # Identify intersecting tiles
     tile_width = math.ceil(width / float(tile_size))
@@ -1606,9 +1606,14 @@ def rasterization_2dgs(
         elif depth_mode == "median":
             depth_for_normal = render_median
 
-        render_normals_from_depth = depth_to_normal(
-            depth_for_normal, torch.linalg.inv(viewmats), Ks
-        ).squeeze(0)
+        if camera_model == "pinhole":
+            render_normals_from_depth = depth_to_normal(
+                depth_for_normal, torch.linalg.inv(viewmats), Ks
+            ).squeeze(0)
+        elif camera_model == "ortho":
+            render_normals_from_depth = ortho_depth_to_normal(
+                depth_for_normal, torch.linalg.inv(viewmats), Ks
+            ).squeeze(0)
 
     meta = {
         "camera_ids": camera_ids,
