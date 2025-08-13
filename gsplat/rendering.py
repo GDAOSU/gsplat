@@ -1562,6 +1562,8 @@ def rasterization_2dgs(
             )
     elif render_mode in ["D", "ED"]:
         colors = depths[..., None]
+        if backgrounds is not None:
+            backgrounds = torch.zeros(batch_dims + (C, 1), device=backgrounds.device)
     else:  # RGB
         pass
 
@@ -1599,8 +1601,7 @@ def rasterization_2dgs(
             ],
             dim=-1,
         )
-    if render_mode in ["RGB+ED", "RGB+D"]:
-        # render_depths = render_colors[..., -1:]
+    if render_mode in ["RGB+ED", "RGB+D", "ED", "D"]:
         if depth_mode == "expected":
             depth_for_normal = render_colors[..., -1:]
         elif depth_mode == "median":
