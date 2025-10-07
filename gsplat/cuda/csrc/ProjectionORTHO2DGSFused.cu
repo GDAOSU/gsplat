@@ -197,8 +197,8 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
     // normals dual visible
     vec3 normal = R33[2]; // the normal is in world space
     // flip normal if it is pointing away from the camera
-    float multipler = glm::dot(-normal, p_camera) > 0 ? 1 : -1;
-    normal *= multipler;
+    const float multiplier = glm::dot(-normal, glm::row(A33, 2)) > 0 ? 1 : -1;
+    normal *= multiplier;
 
 
     // write to outputs
@@ -374,9 +374,7 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
 
     // normals dual visible
     const vec3& normal = R33[2]; // the normal is in world space
-    const float cos = glm::dot(-normal, p_camera);
-    const float multiplier = cos > 0 ? 1 : -1;
-
+    const float multiplier = glm::dot(-normal, glm::row(A33, 2)) > 0 ? 1 : -1;
 
     const mat2 ARS22 = mat2(
         sum(glm::row(A33, 0) * RS33[0]),

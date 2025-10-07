@@ -50,7 +50,7 @@ def _fully_fused_ortho_projection_2dgs(
 
     # compute normals
     normals_ = RS33[..., 2].unsqueeze(-3).expand_as(p_camera)  # [..., C, N, 3] # in world frame
-    cos = -normals_.reshape((-1, 1, 3)) @ p_camera.reshape((-1, 3, 1))
+    cos = torch.einsum("...Ni,...i->...N", -normals_, A33[..., 2, :3])
     cos = cos.reshape(batch_dims + (C, N, 1))
     multiplier = torch.where(cos > 0, torch.tensor(1.0), torch.tensor(-1.0))
     normals = normals_ * multiplier

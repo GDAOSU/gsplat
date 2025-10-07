@@ -1639,9 +1639,14 @@ def rasterization_2dgs(
         "gradient_2dgs": densify,  # This holds the gradient used for densification for 2dgs
     }
 
-    render_normals = torch.einsum(
-        "...ij,...hwj->...hwi", torch.linalg.inv(viewmats)[..., :3, :3], render_normals
-    )
+    if camera_model == "pinhole":
+        # pinhole camera, need to rotate the normals back to world space
+        render_normals = torch.einsum(
+            "...ij,...hwj->...hwi", torch.linalg.inv(viewmats)[..., :3, :3], render_normals
+        )
+    elif camera_model == "ortho":
+        # ortho camera, normals are already in world space
+        pass
 
     return (
         render_colors,
