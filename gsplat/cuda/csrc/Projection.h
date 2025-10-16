@@ -213,7 +213,9 @@ void launch_ortho_projection_2dgs_fused_fwd_kernel(
     at::Tensor means2d,        // [..., C, N, 2]
     at::Tensor depths,         // [..., C, N]
     at::Tensor ray_transforms, // [..., C, N, 3, 3]
-    at::Tensor normals         // [..., C, N, 3]
+    at::Tensor normals,        // [..., C, N, 3]
+    at::Tensor depth_grads     // [..., C, N, 2]
+
 );
 void launch_ortho_projection_2dgs_fused_bwd_kernel(
     // fwd inputs

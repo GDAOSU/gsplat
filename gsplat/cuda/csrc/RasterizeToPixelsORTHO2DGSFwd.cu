@@ -36,6 +36,8 @@ __global__ void rasterize_to_pixels_ortho_2dgs_fwd_kernel(
                                             // values.
     const scalar_t *__restrict__ normals, // [..., N, 3] or [nnz, 3] // The
                                           // normals in camera space.
+    const scalar_t *__restrict__ depth_grads, // [..., N, 2] or [nnz, 2] // The
+                                         // depth gradients in uv space.
     const scalar_t *__restrict__ backgrounds, // [..., CDIM] // Background colors
                                               // on camera basis
     const bool *__restrict__ masks, // [..., tile_height, tile_width] // Optional
@@ -344,15 +346,21 @@ __global__ void rasterize_to_pixels_ortho_2dgs_fwd_kernel(
                 pix_out[k] += c_ptr[k] * vis;
             }
 
+            // Compute planar depth correction
+            const float depth_correction = depth_grads[g * 2] * u + depth_grads[g * 2 + 1] * v;
+            pix_out[CDIM - 1] += depth_correction * vis;
+
             const float *n_ptr = normals + g * 3;
 #pragma unroll
             for (uint32_t k = 0; k < 3; ++k) {
                 normal_out[k] += n_ptr[k] * vis;
             }
+            
+            // the last channel of colors is depth
+            // Apply local plane to correct depth
+            const float depth = depth_correction + c_ptr[CDIM - 1];
 
             if (render_distort != nullptr) {
-                // the last channel of colors is depth
-                const float depth = c_ptr[CDIM - 1];
                 // in nerfacc, loss_bi_0 = weights * t_mids *
                 // exclusive_sum(weights)
                 const float distort_bi_0 = vis * depth * (1.0f - T);
@@ -365,7 +373,7 @@ __global__ void rasterize_to_pixels_ortho_2dgs_fwd_kernel(
 
             // compute median depth
             if (T > 0.5) {
-                median_depth = c_ptr[CDIM - 1];
+                median_depth = depth;
                 median_idx = batch_start + t;
             }
 
@@ -412,6 +420,7 @@ void launch_rasterize_to_pixels_ortho_2dgs_fwd_kernel(
     const at::Tensor colors,         // [..., N, channels] or [nnz, channels]
     const at::Tensor opacities,      // [..., N]  or [nnz]
     const at::Tensor normals,        // [..., N, 3] or [nnz, 3]
+    const at::Tensor depth_grads,        // [..., N, 2] or [nnz, 2]
     const at::optional<at::Tensor> backgrounds, // [..., channels]
     const at::optional<at::Tensor> masks,       // [..., tile_height, tile_width]
     // image size
@@ -473,6 +482,7 @@ void launch_rasterize_to_pixels_ortho_2dgs_fwd_kernel(
             colors.data_ptr<float>(),
             opacities.data_ptr<float>(),
             normals.data_ptr<float>(),
+            depth_grads.data_ptr<float>(),
             backgrounds.has_value() ? backgrounds.value().data_ptr<float>()
                                     : nullptr,
             masks.has_value() ? masks.value().data_ptr<bool>() : nullptr,
@@ -503,6 +513,7 @@ void launch_rasterize_to_pixels_ortho_2dgs_fwd_kernel(
         const at::Tensor colors,                                               \
         const at::Tensor opacities,                                            \
         const at::Tensor normals,                                              \
+        const at::Tensor depth_grads,                                              \
         const at::optional<at::Tensor> backgrounds,                            \
         const at::optional<at::Tensor> masks,                                  \
         uint32_t image_width,                                                  \

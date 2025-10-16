@@ -17,8 +17,7 @@ def _fully_fused_ortho_projection_2dgs(
     height: int,
     near_plane: float = 0.01,
     far_plane: float = 1e10,
-    eps: float = 0,
-    radius_clip: float = 0.0,
+    eps: float = 0
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
     """PyTorch implementation of `gsplat.cuda._wrapper.fully_fused_projection_2dgs()`
 
@@ -42,8 +41,8 @@ def _fully_fused_ortho_projection_2dgs(
         [scales[..., :2], torch.ones(batch_dims + (N, 1), device=means.device)], dim=-1
     )  # [..., N, 3]
     RS33 = _quat_scale_to_matrix(quats, scales2d)
-    ARS22 = torch.einsum("...cij,...njk->...cnik", A33[..., :2, :3], RS33[..., :3, :2])  # [..., C, N, 2, 2]
-    KARS22 = torch.einsum("...cij,...cnjk->...cnik", Ks[..., :2, :2], ARS22[..., :2, :2])  # [..., C, N, 2, 2]
+    ARS32 = torch.einsum("...cij,...njk->...cnik", A33[..., :3, :3], RS33[..., :3, :2])  # [..., C, N, 3, 2]
+    KARS22 = torch.einsum("...cij,...cnjk->...cnik", Ks[..., :2, :2], ARS32[..., :2, :2])  # [..., C, N, 2, 2]
 
     p_camera = torch.einsum("...cij,...nj->...cni", A33, means) + b31[..., None, :]  # [..., C, N, 3]
     p_image = torch.einsum("...cij,...cnj->...cni", Ks[..., :2, :2], p_camera[..., :2]) + Ks[..., :2, 2].unsqueeze(-2)
@@ -55,6 +54,9 @@ def _fully_fused_ortho_projection_2dgs(
     multiplier = torch.where(cos > 0, torch.tensor(1.0), torch.tensor(-1.0))
     normals = normals_ * multiplier
 
+    # plane of depth from uv
+    depth_grads = ARS32[..., 2, :2] # [..., C, N, 2]
+    
     # ray transform matrix, omitting the z rotation
     M_u2i = torch.zeros(batch_dims + (C, N, 3, 3), device=means.device)
     M_u2i[..., :2, :2] = KARS22[..., :2, :2]
@@ -95,7 +97,7 @@ def _fully_fused_ortho_projection_2dgs(
     radius[~inside] = 0.0
     radii = radius.int()
 
-    return radii, means2d, depths, M_i2u, normals
+    return radii, means2d, depths, M_i2u, normals, depth_grads
 
 
 def accumulate_2dgs(
@@ -104,6 +106,7 @@ def accumulate_2dgs(
     opacities: Tensor,  # [..., N]
     colors: Tensor,  # [..., N, channels]
     normals: Tensor,  # [..., N, 3]
+    depth_grads: Tensor,  # [..., N, 2]
     gaussian_ids: Tensor,  # [M]
     pixel_ids: Tensor,  # [M]
     image_ids: Tensor,  # [M]
@@ -152,6 +155,7 @@ def accumulate_2dgs(
     assert normals.shape == image_dims + (N, 3), normals.shape
 
     means2d = means2d.reshape(I, N, 2)
+    depth_grads = depth_grads.reshape(I, N, 2)
     M_i2u = M_i2u.reshape(I, N, 3, 3)
     opacities = opacities.reshape(I, N)
     colors = colors.reshape(I, N, channels)
@@ -167,6 +171,10 @@ def accumulate_2dgs(
     u = M[..., 0, 0] * pixel_ids_x + M[..., 0, 1] * pixel_ids_y + M[..., 0, 2]
     v = M[..., 1, 0] * pixel_ids_x + M[..., 1, 1] * pixel_ids_y + M[..., 1, 2]
 
+    depth_grads_ = depth_grads[image_ids, gaussian_ids]
+
+    depth_correction = u*depth_grads_[..., 0] + v*depth_grads_[..., 1]
+
     sigmas_3d = u**2 + v**2  # [M]
     sigmas_2d = 2 * (deltas[..., 0] ** 2 + deltas[..., 1] ** 2)
     sigmas = 0.5 * torch.minimum(sigmas_3d, sigmas_2d)  # [M]
@@ -178,9 +186,11 @@ def accumulate_2dgs(
 
     weights, trans = render_weight_from_alpha(alphas, ray_indices=indices, n_rays=total_pixels)
 
+    colors_ = colors[image_ids, gaussian_ids]
+    colors_[..., -1] = colors_[..., -1] + depth_correction
     renders = accumulate_along_rays(
         weights,
-        colors[image_ids, gaussian_ids],
+        colors_,
         ray_indices=indices,
         n_rays=total_pixels,
     ).reshape(image_dims + (image_height, image_width, channels))
@@ -202,6 +212,7 @@ def _rasterize_to_pixels_ortho_2dgs(
     M_i2u: Tensor,  # [..., N, 3, 3]
     colors: Tensor,  # [..., N, channels]
     normals: Tensor,  # [..., N, 3]
+    depth_grads: Tensor,  # [..., N, 2]
     opacities: Tensor,  # [..., N]
     image_width: int,
     image_height: int,
@@ -291,6 +302,7 @@ def _rasterize_to_pixels_ortho_2dgs(
             opacities,
             colors,
             normals,
+            depth_grads,
             gs_ids,
             pixel_ids,
             image_ids,

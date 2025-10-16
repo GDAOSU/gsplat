@@ -1291,6 +1291,7 @@ def rasterization_2dgs(
     distloss: bool = False,
     depth_mode: Literal["expected", "median"] = "expected",
     camera_model: Literal["pinhole", "ortho"] = "pinhole",
+    planar_depth: bool = False,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Dict]:
     """Rasterize a set of 2D Gaussians (N) to a batch of image planes (C).
 
@@ -1459,6 +1460,7 @@ def rasterization_2dgs(
     )
 
     if packed:
+        # TODO: planar_depth is not supported in packed mode yet.
         (
             batch_ids,
             camera_ids,
@@ -1472,12 +1474,16 @@ def rasterization_2dgs(
         opacities = opacities.view(B, N)[batch_ids, gaussian_ids]
         image_ids = batch_ids * C + camera_ids
     else:
-        radii, means2d, depths, ray_transforms, normals = proj_results
+        radii, means2d, depths, ray_transforms, normals, planes = proj_results
         opacities = torch.broadcast_to(
             opacities[..., None, :], batch_dims + (C, N)
         )  # [..., C, N]
         camera_ids, gaussian_ids = None, None
         image_ids = None
+
+    if not planar_depth:
+        # set planes to be 0 if not using planar depth
+        planes = torch.zeros_like(planes)
 
     densify = torch.zeros_like(
         means2d, dtype=means.dtype, requires_grad=True, device=device
@@ -1579,6 +1585,7 @@ def rasterization_2dgs(
         colors,
         opacities,
         normals,
+        planes,
         densify,
         width,
         height,
@@ -1625,6 +1632,7 @@ def rasterization_2dgs(
         "ray_transforms": ray_transforms,
         "opacities": opacities,
         "normals": normals,
+        "planes": planes,
         "tile_width": tile_width,
         "tile_height": tile_height,
         "tiles_per_gauss": tiles_per_gauss,

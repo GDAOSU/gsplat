@@ -691,6 +691,7 @@ std::tuple<
     at::Tensor,
     at::Tensor,
     at::Tensor,
+    at::Tensor,
     at::Tensor>
 ortho_projection_2dgs_fused_fwd(
     const at::Tensor means,    // [..., N, 3]
@@ -737,6 +738,10 @@ ortho_projection_2dgs_fused_fwd(
     normals_shape.append({C, N, 3});
     at::Tensor normals = at::zeros(normals_shape, opt);
 
+    at::DimVector depth_grads_shape(batch_dims);
+    depth_grads_shape.append({C, N, 2});
+    at::Tensor depth_grads = at::zeros(depth_grads_shape, opt);
+
     launch_ortho_projection_2dgs_fused_fwd_kernel(
         // inputs
         means,
@@ -754,9 +759,10 @@ ortho_projection_2dgs_fused_fwd(
         means2d,
         depths,
         ray_transforms,
-        normals
+        normals,
+        depth_grads
     );
-    return std::make_tuple(radii, means2d, depths, ray_transforms, normals);
+    return std::make_tuple(radii, means2d, depths, ray_transforms, normals, depth_grads);
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>

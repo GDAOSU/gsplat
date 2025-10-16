@@ -468,6 +468,7 @@ rasterize_to_pixels_ortho_2dgs_fwd(
     const at::Tensor colors,         // [..., N, channels] or [nnz, channels]
     const at::Tensor opacities,      // [..., N]  or [nnz]
     const at::Tensor normals,        // [..., N, 3] or [nnz, 3]
+    const at::Tensor depth_grads,        // [..., N, 2] or [nnz, 2]
     const at::optional<at::Tensor> backgrounds, // [..., channels]
     const at::optional<at::Tensor> masks,       // [..., tile_height, tile_width]
     // image size
@@ -533,6 +534,7 @@ rasterize_to_pixels_ortho_2dgs_fwd(
             colors,                                                            \
             opacities,                                                         \
             normals,                                                           \
+            depth_grads,                                                       \
             backgrounds,                                                       \
             masks,                                                             \
             image_width,                                                       \

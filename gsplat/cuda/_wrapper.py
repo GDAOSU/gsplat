@@ -1968,7 +1968,7 @@ class _FullyFusedProjection2DGS(torch.autograd.Function):
         else:
             raise ValueError(f"Unsupported camera model: {camera_model}")
 
-        radii, means2d, depths, ray_transforms, normals = _make_lazy_cuda_func(func_name)(
+        radii, means2d, depths, ray_transforms, normals, depth_grads = _make_lazy_cuda_func(func_name)(
             means,
             quats,
             scales,
@@ -1990,13 +1990,14 @@ class _FullyFusedProjection2DGS(torch.autograd.Function):
             radii,
             ray_transforms,
             normals,
+            depth_grads,
         )
         ctx.width = width
         ctx.height = height
         ctx.eps2d = eps2d
         ctx.camera_model = camera_model
 
-        return radii, means2d, depths, ray_transforms, normals
+        return radii, means2d, depths, ray_transforms, normals, depth_grads
 
     @staticmethod
     def backward(ctx, v_radii, v_means2d, v_depths, v_ray_transforms, v_normals):
@@ -2260,6 +2261,7 @@ def rasterize_to_pixels_2dgs(
     colors: Tensor,  # [..., N, channels]
     opacities: Tensor,  # [..., N]
     normals: Tensor,  # [..., N, 3]
+    depth_grads: Tensor,  # [..., N, 2]
     densify: Tensor,  # [..., N, 2]
     image_width: int,
     image_height: int,
@@ -2367,6 +2369,7 @@ def rasterize_to_pixels_2dgs(
         colors.contiguous(),
         opacities.contiguous(),
         normals.contiguous(),
+        depth_grads.contiguous(),
         densify.contiguous(),
         backgrounds,
         masks,
@@ -2492,6 +2495,7 @@ class _RasterizeToPixels2DGS(torch.autograd.Function):
         colors: Tensor,
         opacities: Tensor,
         normals: Tensor,
+        depth_grads: Tensor,
         densify: Tensor,
         backgrounds: Tensor,
         masks: Tensor,
@@ -2526,6 +2530,7 @@ class _RasterizeToPixels2DGS(torch.autograd.Function):
             colors,
             opacities,
             normals,
+            depth_grads,
             backgrounds,
             masks,
             width,
@@ -2541,6 +2546,7 @@ class _RasterizeToPixels2DGS(torch.autograd.Function):
             colors,
             opacities,
             normals,
+            depth_grads,
             densify,
             backgrounds,
             masks,
@@ -2584,6 +2590,7 @@ class _RasterizeToPixels2DGS(torch.autograd.Function):
             colors,
             opacities,
             normals,
+            depth_grads,
             densify,
             backgrounds,
             masks,

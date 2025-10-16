@@ -57,8 +57,9 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
                                       // that transform xy-planes in pixel
                                       // spaces into splat coordinates (WH)^T in
                                       // equation (9) in paper
-    scalar_t
-        *__restrict__ normals_ptr // [B, C, N, 3] The normals in camera spaces.
+    scalar_t *__restrict__ normals_ptr, // [B, C, N, 3] The normals in camera spaces.
+    scalar_t *__restrict__ depth_grads_ptr // [B, C, N, 2] The homogeneous plane of
+                                      // depth from uv
 ) {
 
     /**
@@ -143,6 +144,11 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
         sum(glm::row(A33, 1) * RS32[1]) // 2nd column
     );
 
+    // homogeneous plane defined in uv space. depth = plane.x * u + plane.y * v
+    // + p_camera.z
+    const vec2 depth_grad_uv =
+        vec2(sum(glm::row(A33, 2) * RS32[0]), sum(glm::row(A33, 2) * RS32[1]));
+
     const mat2 KARS = mat2(
         fx * ARS22[0][0],
         fy * ARS22[0][1], // 1st column
@@ -223,6 +229,10 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
     normals_ptr[idx * 3] = normal.x;
     normals_ptr[idx * 3 + 1] = normal.y;
     normals_ptr[idx * 3 + 2] = normal.z;
+
+    // homogeneous plane
+    depth_grads_ptr[idx * 2] = depth_grad_uv.x;
+    depth_grads_ptr[idx * 2 + 1] = depth_grad_uv.y;
 }
 
 void launch_ortho_projection_2dgs_fused_fwd_kernel(
@@ -242,7 +252,8 @@ void launch_ortho_projection_2dgs_fused_fwd_kernel(
     at::Tensor means2d, // [..., C, N, 2]
     at::Tensor depths,  // [..., C, N]
     at::Tensor M_i2u_,  // [..., C, N, 3, 3]
-    at::Tensor normals  // [..., C, N, 3]
+    at::Tensor normals, // [..., C, N, 3]
+    at::Tensor depth_grads // [..., C, N, 2]
 ) {
     uint32_t N = means.size(-2);          // number of gaussians
     uint32_t B = means.numel() / (N * 3); // number of batches
@@ -277,7 +288,8 @@ void launch_ortho_projection_2dgs_fused_fwd_kernel(
             means2d.data_ptr<float>(),
             depths.data_ptr<float>(),
             M_i2u_.data_ptr<float>(),
-            normals.data_ptr<float>()
+            normals.data_ptr<float>(),
+            depth_grads.data_ptr<float>()
         );
 }
 
@@ -369,11 +381,12 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
     const vec2 p_image(fx * p_camera.x + cx, fy * p_camera.y + cy);
 
     const mat3 R33 = quat_to_rotmat(quat);
-    const mat3 S33 = mat3(scale[0], 0.0, 0.0, 0.0, scale[1], 0.0, 0.0, 0.0, 1.0);
+    const mat3 S33 =
+        mat3(scale[0], 0.0, 0.0, 0.0, scale[1], 0.0, 0.0, 0.0, 1.0);
     const mat3 RS33 = R33 * S33;
 
     // normals dual visible
-    const vec3& normal = R33[2]; // the normal is in world space
+    const vec3 &normal = R33[2]; // the normal is in world space
     const float multiplier = glm::dot(-normal, glm::row(A33, 2)) > 0 ? 1 : -1;
 
     const mat2 ARS22 = mat2(
@@ -428,9 +441,12 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
         v_M_i2u_ptr[8] // 3rd column
     );                 // w.r.t. A33, b31, means, quat, scale
 
-    vec2 v_means2d_val(v_means2d_ptr[0], v_means2d_ptr[1]); // w.r.t. A33, b31, and means
-    const scalar_t v_depths_val = v_depths_ptr[0];      // w.r.t, A33, b31, and means
-    const vec3 v_normals_val = glm::make_vec3(v_normals_ptr); // w.r.t. quat, A33
+    vec2 v_means2d_val(
+        v_means2d_ptr[0], v_means2d_ptr[1]
+    );                                             // w.r.t. A33, b31, and means
+    const scalar_t v_depths_val = v_depths_ptr[0]; // w.r.t, A33, b31, and means
+    const vec3 v_normals_val =
+        glm::make_vec3(v_normals_ptr); // w.r.t. quat, A33
 
     /////////////////////////////
     // Initialize gradient accumulators
@@ -502,12 +518,14 @@ __global__ void ortho_projection_2dgs_fused_bwd_kernel(
     const mat2x3 v_RS32 = glm::transpose(A23) * v_ARS22;
     v_scale[0] += sum(R33[0] * v_RS32[0]);
     v_scale[1] += sum(R33[1] * v_RS32[1]);
-    const mat3 v_R33(v_RS32[0] * scale[0], v_RS32[1] * scale[1], v_normals_val * multiplier);
+    const mat3 v_R33(
+        v_RS32[0] * scale[0], v_RS32[1] * scale[1], v_normals_val * multiplier
+    );
 
-    // accumulate v_A33
-    #pragma unroll 
+// accumulate v_A33
+#pragma unroll
     for (int i = 0; i < 2; ++i)
-        #pragma unroll
+#pragma unroll
         for (int j = 0; j < 3; ++j)
             v_A33[j][i] += v_A23[j][i];
 
