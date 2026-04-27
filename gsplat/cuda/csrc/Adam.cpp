@@ -1,3 +1,25 @@
+/*
+ * SPDX-FileCopyrightText: Copyright 2025 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "Config.h"
+
+#if GSPLAT_BUILD_ADAM
+
 #include <ATen/TensorUtils.h>
 #include <ATen/core/Tensor.h>
 #include <c10/cuda/CUDAGuard.h> // for DEVICE_GUARD
@@ -13,15 +35,15 @@
 namespace gsplat {
 
 void adam(
-    at::Tensor &param,                    // [N, ...]
-    const at::Tensor &param_grad,         // [N, ...]
-    at::Tensor &exp_avg,                  // [N, ...]
-    at::Tensor &exp_avg_sq,               // [N, ...]
-    const at::optional<at::Tensor> valid, // [N]
-    const float lr,
-    const float b1,
-    const float b2,
-    const float eps
+    at::Tensor &param,                     // [N, ...]
+    const at::Tensor &param_grad,          // [N, ...]
+    at::Tensor &exp_avg,                   // [N, ...]
+    at::Tensor &exp_avg_sq,                // [N, ...]
+    const at::optional<at::Tensor> &valid, // [N]
+    double lr,
+    double b1,
+    double b2,
+    double eps
 ) {
     DEVICE_GUARD(param);
     CHECK_INPUT(param);
@@ -43,3 +65,5 @@ void adam(
 }
 
 } // namespace gsplat
+
+#endif

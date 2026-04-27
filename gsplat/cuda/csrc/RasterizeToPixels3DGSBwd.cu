@@ -1,3 +1,25 @@
+/*
+ * SPDX-FileCopyrightText: Copyright 2025 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "Config.h"
+
+#if GSPLAT_BUILD_3DGS
+
 #include <ATen/Dispatch.h>
 #include <ATen/core/Tensor.h>
 #include <ATen/cuda/Atomic.cuh>
@@ -7,6 +29,7 @@
 #include "Common.h"
 #include "Rasterization.h"
 #include "Utils.cuh"
+#include "MacroUtils.h"
 
 namespace gsplat {
 
@@ -174,7 +197,7 @@ __global__ void rasterize_to_pixels_3dgs_bwd_kernel(
                                       conic.z * delta.y * delta.y) +
                               conic.y * delta.x * delta.y;
                 vis = __expf(-sigma);
-                alpha = min(0.999f, opac * vis);
+                alpha = min(MAX_ALPHA, opac * vis);
                 if (sigma < 0.f || alpha < ALPHA_THRESHOLD) {
                     valid = false;
                 }
@@ -192,7 +215,7 @@ __global__ void rasterize_to_pixels_3dgs_bwd_kernel(
             // initialize everything to 0, only set if the lane is valid
             if (valid) {
                 // compute the current T for this gaussian
-                float ra = 1.0f / (1.0f - alpha);
+                float ra = 1.0f / fmaxf(MIN_ONE_MINUS_ALPHA, 1.0f - alpha);
                 T *= ra;
                 // update v_rgb for this gaussian
                 const float fac = alpha * T;
@@ -219,7 +242,7 @@ __global__ void rasterize_to_pixels_3dgs_bwd_kernel(
                     v_alpha += -T_final * ra * accum;
                 }
 
-                if (opac * vis <= 0.999f) {
+                if (opac * vis <= MAX_ALPHA) {
                     const float v_sigma = -opac * vis * v_alpha;
                     v_conic_local = {
                         0.5f * v_sigma * delta.x * delta.x,
@@ -406,25 +429,9 @@ void launch_rasterize_to_pixels_3dgs_bwd_kernel(
         at::Tensor v_opacities                                                 \
     );
 
-__INS__(1)
-__INS__(2)
-__INS__(3)
-__INS__(4)
-__INS__(5)
-__INS__(8)
-__INS__(9)
-__INS__(16)
-__INS__(17)
-__INS__(32)
-__INS__(33)
-__INS__(64)
-__INS__(65)
-__INS__(128)
-__INS__(129)
-__INS__(256)
-__INS__(257)
-__INS__(512)
-__INS__(513)
+GSPLAT_FOR_EACH(__INS__, GSPLAT_NUM_CHANNELS)
 #undef __INS__
 
 } // namespace gsplat
+
+#endif

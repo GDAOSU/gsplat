@@ -1,3 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2024-2026 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import struct
 from typing import Optional, Tuple
 
@@ -7,72 +23,20 @@ import torch.nn.functional as F
 from torch import Tensor
 from typing_extensions import Literal, assert_never
 
-
-def _quat_to_rotmat(quats: Tensor) -> Tensor:
-    """Convert quaternion to rotation matrix."""
-    quats = F.normalize(quats, p=2, dim=-1)
-    w, x, y, z = torch.unbind(quats, dim=-1)
-    R = torch.stack(
-        [
-            1 - 2 * (y**2 + z**2),
-            2 * (x * y - w * z),
-            2 * (x * z + w * y),
-            2 * (x * y + w * z),
-            1 - 2 * (x**2 + z**2),
-            2 * (y * z - w * x),
-            2 * (x * z - w * y),
-            2 * (y * z + w * x),
-            1 - 2 * (x**2 + y**2),
-        ],
-        dim=-1,
-    )
-    return R.reshape(quats.shape[:-1] + (3, 3))
-
-
-def _quat_scale_to_matrix(
-    quats: Tensor,  # [..., 4],
-    scales: Tensor,  # [..., 3],
-) -> Tensor:
-    """Convert quaternion and scale to a 3x3 matrix (R * S)."""
-    batch_dims = quats.shape[:-1]
-    assert quats.shape == batch_dims + (4,), quats.shape
-    assert scales.shape == batch_dims + (3,), scales.shape
-    R = _quat_to_rotmat(quats)  # [..., 3, 3]
-    M = R * scales[..., None, :]  # [..., 3, 3]
-    return M
-
-
-def _quat_scale_to_covar_preci(
-    quats: Tensor,  # [..., 4],
-    scales: Tensor,  # [..., 3],
-    compute_covar: bool = True,
-    compute_preci: bool = True,
-    triu: bool = False,
-) -> Tuple[Optional[Tensor], Optional[Tensor]]:
-    """PyTorch implementation of `gsplat.cuda._wrapper.quat_scale_to_covar_preci()`."""
-    batch_dims = quats.shape[:-1]
-    assert quats.shape == batch_dims + (4,), quats.shape
-    assert scales.shape == batch_dims + (3,), scales.shape
-    R = _quat_to_rotmat(quats)  # [..., 3, 3]
-
-    if compute_covar:
-        M = R * scales[..., None, :]  # [..., 3, 3]
-        covars = torch.einsum("...ij,...kj -> ...ik", M, M)  # [..., 3, 3]
-        if triu:
-            covars = covars.reshape(batch_dims + (9,))  # [..., 9]
-            covars = (
-                covars[..., [0, 1, 2, 4, 5, 8]] + covars[..., [0, 3, 6, 4, 7, 8]]
-            ) / 2.0  # [..., 6]
-    if compute_preci:
-        P = R * (1 / scales[..., None, :])  # [..., 3, 3]
-        precis = torch.einsum("...ij,...kj -> ...ik", P, P)  # [..., 3, 3]
-        if triu:
-            precis = precis.reshape(batch_dims + (9,))  # [..., 9]
-            precis = (
-                precis[..., [0, 1, 2, 4, 5, 8]] + precis[..., [0, 3, 6, 4, 7, 8]]
-            ) / 2.0  # [..., 6]
-
-    return covars if compute_covar else None, precis if compute_preci else None
+from ._math import (
+    _safe_normalize,
+    _rotmat_to_quat,
+    _quat_inverse,
+    _quat_rotate,
+    _quat_to_rotmat,
+    _quat_multiply,
+    _quat_slerp,
+    _quat_scale_to_preci_half,
+    _quat_scale_to_matrix,
+    _quat_scale_to_covar_preci,
+)
+from ._wrapper import CameraModel, RollingShutterType
+from ._constants import MAX_ALPHA, MIN_COMPENSATION
 
 
 def _persp_proj(
@@ -294,7 +258,7 @@ def _fully_fused_projection(
     near_plane: float = 0.01,
     far_plane: float = 1e10,
     calc_compensations: bool = False,
-    camera_model: Literal["pinhole", "ortho", "fisheye", "ftheta"] = "pinhole",
+    camera_model: CameraModel = "pinhole",
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Optional[Tensor]]:
     """PyTorch implementation of `gsplat.cuda._wrapper.fully_fused_projection()`
 
@@ -339,7 +303,9 @@ def _fully_fused_projection(
     det = det.clamp(min=1e-10)
 
     if calc_compensations:
-        compensations = torch.sqrt(torch.clamp(det_orig / det, min=0.0))
+        compensations = torch.sqrt(
+            torch.clamp(det_orig / det, min=MIN_COMPENSATION * MIN_COMPENSATION)
+        )
     else:
         compensations = None
 
@@ -582,7 +548,7 @@ def accumulate(
         + c[:, 1] * deltas[:, 0] * deltas[:, 1]
     )  # [M]
     alphas = torch.clamp_max(
-        opacities[image_ids, gaussian_ids] * torch.exp(-sigmas), 0.999
+        opacities[image_ids, gaussian_ids] * torch.exp(-sigmas), MAX_ALPHA
     )
 
     indices = image_ids * image_height * image_width + pixel_ids

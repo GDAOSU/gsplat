@@ -1,3 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2025 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Tests for the functions in the CUDA extension.
 
 Usage:
@@ -11,8 +27,10 @@ from typing import Tuple
 
 import pytest
 import torch
+import gsplat
 
 from gsplat._helper import load_test_data
+from gsplat.rendering import RenderMode
 
 device = torch.device("cuda:0")
 
@@ -61,10 +79,11 @@ def test_data():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="No CUDA device")
+@pytest.mark.skipif(not gsplat.has_3dgut(), reason="3DGUT support isn't built in")
 @pytest.mark.parametrize("render_mode", ["RGB"])
 def test_rasterization(
     test_data,
-    render_mode: str,
+    render_mode: RenderMode,
 ):
     from gsplat.rendering import (
         rasterization,

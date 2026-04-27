@@ -1,3 +1,25 @@
+/*
+ * SPDX-FileCopyrightText: Copyright 2025 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "Config.h"
+
+#if GSPLAT_BUILD_2DGS
+
 #include <ATen/Dispatch.h>
 #include <ATen/core/Tensor.h>
 #include <c10/cuda/CUDAStream.h>
@@ -5,6 +27,7 @@
 
 #include "Common.h"
 #include "Rasterization.h"
+#include "MacroUtils.h"
 
 namespace gsplat {
 
@@ -137,10 +160,12 @@ __global__ void rasterize_to_pixels_2dgs_fwd_kernel(
 
     // when the mask is provided, render the background color and return
     // if this tile is labeled as False
-    if (masks != nullptr && inside && !masks[tile_id]) {
-        for (uint32_t k = 0; k < CDIM; ++k) {
-            render_colors[pix_id * CDIM + k] =
-                backgrounds == nullptr ? 0.0f : backgrounds[k];
+    if (masks != nullptr && !masks[tile_id]) {
+        if (inside) {
+            for (uint32_t k = 0; k < CDIM; ++k) {
+                render_colors[pix_id * CDIM + k] =
+                    backgrounds == nullptr ? 0.0f : backgrounds[k];
+            }
         }
         return;
     }
@@ -358,7 +383,7 @@ __global__ void rasterize_to_pixels_2dgs_fwd_kernel(
 
             const float sigma = 0.5f * gauss_weight;
             // evaluation of the gaussian exponential term
-            float alpha = min(0.999f, opac * __expf(-sigma));
+            float alpha = min(MAX_ALPHA, opac * __expf(-sigma));
 
             // ignore transparent gaussians
             if (sigma < 0.f || alpha < ALPHA_THRESHOLD) {
@@ -366,7 +391,7 @@ __global__ void rasterize_to_pixels_2dgs_fwd_kernel(
             }
 
             const float next_T = T * (1.0f - alpha);
-            if (next_T <= 1e-4) { // this pixel is done: exclusive
+            if (next_T <= TRANSMITTANCE_THRESHOLD) { // this pixel is done: exclusive
                 done = true;
                 break;
             }
@@ -555,25 +580,9 @@ void launch_rasterize_to_pixels_2dgs_fwd_kernel(
         at::Tensor median_ids                                                  \
     );
 
-__INS__(1)
-__INS__(2)
-__INS__(3)
-__INS__(4)
-__INS__(5)
-__INS__(8)
-__INS__(9)
-__INS__(16)
-__INS__(17)
-__INS__(32)
-__INS__(33)
-__INS__(64)
-__INS__(65)
-__INS__(128)
-__INS__(129)
-__INS__(256)
-__INS__(257)
-__INS__(512)
-__INS__(513)
+GSPLAT_FOR_EACH(__INS__, GSPLAT_NUM_CHANNELS)
 #undef __INS__
 
 } // namespace gsplat
+
+#endif

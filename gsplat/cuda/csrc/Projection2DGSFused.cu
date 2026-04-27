@@ -1,3 +1,25 @@
+/*
+ * SPDX-FileCopyrightText: Copyright 2024-2025 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "Config.h"
+
+#if GSPLAT_BUILD_2DGS
+
 #include <ATen/Dispatch.h>
 #include <ATen/core/Tensor.h>
 #include <ATen/cuda/Atomic.cuh>
@@ -216,8 +238,8 @@ __global__ void projection_2dgs_fused_fwd_kernel(
     const vec2 half_extend = mean2d * mean2d - temp;
 
     // ==============================================
-    const float radius_x = ceil(3.33f * sqrt(max(1e-4, half_extend.x)));
-    const float radius_y = ceil(3.33f * sqrt(max(1e-4, half_extend.y)));
+    const float radius_x = ceil(GAUSSIAN_EXTEND * sqrt(max(1e-4, half_extend.x)));
+    const float radius_y = ceil(GAUSSIAN_EXTEND * sqrt(max(1e-4, half_extend.y)));
 
     if (radius_x <= radius_clip && radius_y <= radius_clip) {
         radii[idx * 2] = 0;
@@ -541,3 +563,5 @@ void launch_projection_2dgs_fused_bwd_kernel(
 }
 
 } // namespace gsplat
+
+#endif

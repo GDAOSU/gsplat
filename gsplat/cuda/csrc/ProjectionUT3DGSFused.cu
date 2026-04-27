@@ -1,13 +1,39 @@
+/*
+ * SPDX-FileCopyrightText: Copyright 2025 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "Config.h"
+
+#if GSPLAT_BUILD_3DGUT
+
 #include <ATen/Dispatch.h>
 #include <ATen/core/Tensor.h>
 #include <ATen/cuda/Atomic.cuh>
 #include <c10/cuda/CUDAStream.h>
 #include <cooperative_groups.h>
+#include <cuda/std/optional>
 
 #include "Common.h"
+#include "ExternalDistortion.cuh"
 #include "Projection.h"
 #include "Utils.cuh"
 #include "Cameras.cuh"
+#include "Lidars.cuh"
+#include "Ops.h"
 
 namespace gsplat {
 
@@ -32,13 +58,16 @@ __global__ void projection_ut_3dgs_fused_kernel(
     const float far_plane,
     const float radius_clip,
     const CameraModelType camera_model_type,
+    const bool global_z_order,
     // uncented transform
     const UnscentedTransformParameters ut_params,    
     const ShutterType rs_type,
     const scalar_t *__restrict__ radial_coeffs,     // [B, C, 6] or [B, C, 4] optional
     const scalar_t *__restrict__ tangential_coeffs, // [B, C, 2] optional
     const scalar_t *__restrict__ thin_prism_coeffs, // [B, C, 4] optional
-    const FThetaCameraDistortionParameters ftheta_coeffs, // shared parameters for all cameras
+    const FThetaCameraDistortionDeviceParams ftheta_device_coeffs, // shared parameters for all cameras
+    const cuda::std::optional<RowOffsetStructuredSpinningLidarModelParametersExtDevice> lidar_coeffs,
+    const cuda::std::optional<extdist::BivariateWindshieldModelDeviceParams> external_distortion_device_params, // external distortion parameters
     // outputs
     int32_t *__restrict__ radii,         // [B, C, N, 2]
     scalar_t *__restrict__ means2d,      // [B, C, N, 2]
@@ -63,7 +92,26 @@ __global__ void projection_ut_3dgs_fused_kernel(
         quats[bid * N * 4 + gid * 4 + 1],
         quats[bid * N * 4 + gid * 4 + 2],
         quats[bid * N * 4 + gid * 4 + 3]};  // w,x,y,z quaternion
-    quat = glm::normalize(quat);
+    // A zero-length quaternion has no defined orientation — the Gaussian is
+    // degenerate. Skip it to avoid NaN from glm::normalize dividing by zero.
+    // Under --use_fast_math, 0/0 silently gives 0 instead of NaN, causing
+    // glm::mat3_cast to produce an identity rotation (wrong, not NaN).
+    float quat_norm2 = glm::dot(quat, quat);
+    if (is_near_zero(quat_norm2)) {
+        radii[idx * 2] = 0;
+        radii[idx * 2 + 1] = 0;
+        return;
+    }
+
+    // A Gaussian with near-zero scale along any axis has a divergent precision
+    // matrix (1/scale → inf). The 3DGUT rasterization kernel evaluates
+    // Gaussians in 3D using the precision matrix, so such Gaussians must not
+    // enter the intersection list.  Cull them here.
+    if (is_near_zero(scale[0]) || is_near_zero(scale[1]) || is_near_zero(scale[2])) {
+        radii[idx * 2] = 0;
+        radii[idx * 2 + 1] = 0;
+        return;
+    }
 
     // shift pointers to the current camera. note that glm is colume-major.
     const vec2 focal_length = {Ks[bid * C * 9 + cid * 9 + 0], Ks[bid * C * 9 + cid * 9 + 4]};
@@ -76,14 +124,19 @@ __global__ void projection_ut_3dgs_fused_kernel(
     );
 
     // transform Gaussian center to camera space
-	// Interpolate to *center* shutter pose as single per-Gaussian camera pose
-	const auto shutter_pose = interpolate_shutter_pose(0.5f, rs_params);
+    // Interpolate to *center* shutter pose as single per-Gaussian camera pose
+    const auto shutter_pose = interpolate_shutter_pose(0.5f, rs_params);
     const vec3 mean_c = glm::rotate(shutter_pose.q, mean) + shutter_pose.t;
-    if (mean_c.z < near_plane || mean_c.z > far_plane) {
+
+    const float cull_depth = global_z_order ? mean_c.z : glm::length(mean_c);
+    if (cull_depth < near_plane || cull_depth > far_plane) {
         radii[idx * 2] = 0;
         radii[idx * 2 + 1] = 0;
         return;
     }
+
+    // Make sure the rotation quaternion is normalized
+    quat *= rsqrtf(quat_norm2);
 
     // projection using uncented transform
     ImageGaussianReturn image_gaussian_return;
@@ -94,6 +147,8 @@ __global__ void projection_ut_3dgs_fused_kernel(
             cm_params.shutter_type = rs_type;
             cm_params.principal_point = { principal_point.x, principal_point.y };
             cm_params.focal_length = { focal_length.x, focal_length.y };
+            cm_params.external_distortion_params = external_distortion_device_params.has_value() ? 
+                &external_distortion_device_params.value() : nullptr;
             PerfectPinholeCameraModel camera_model(cm_params);
             image_gaussian_return =
                 world_gaussian_to_image_gaussian_unscented_transform_shutter_pose(
@@ -113,6 +168,8 @@ __global__ void projection_ut_3dgs_fused_kernel(
             if (thin_prism_coeffs != nullptr) {
                 cm_params.thin_prism_coeffs = make_array<float, 4>(thin_prism_coeffs + bid * C * 4 + cid * 4);
             }
+            cm_params.external_distortion_params = external_distortion_device_params.has_value() ? 
+                &external_distortion_device_params.value() : nullptr;
             OpenCVPinholeCameraModel camera_model(cm_params);
             image_gaussian_return =
                 world_gaussian_to_image_gaussian_unscented_transform_shutter_pose(
@@ -127,6 +184,8 @@ __global__ void projection_ut_3dgs_fused_kernel(
         if (radial_coeffs != nullptr) {
             cm_params.radial_coeffs = make_array<float, 4>(radial_coeffs + bid * C * 4 + cid * 4);
         }
+        cm_params.external_distortion_params = external_distortion_device_params.has_value() ? 
+            &external_distortion_device_params.value() : nullptr;
         OpenCVFisheyeCameraModel camera_model(cm_params);
         image_gaussian_return =
             world_gaussian_to_image_gaussian_unscented_transform_shutter_pose(
@@ -137,8 +196,16 @@ __global__ void projection_ut_3dgs_fused_kernel(
         cm_params.resolution = {image_width, image_height};
         cm_params.shutter_type = rs_type;
         cm_params.principal_point = { principal_point.x, principal_point.y };
-        cm_params.dist = ftheta_coeffs;
+        cm_params.dist = ftheta_device_coeffs;
+        cm_params.external_distortion_params = external_distortion_device_params.has_value() ?
+            &external_distortion_device_params.value() : nullptr;
         FThetaCameraModel camera_model(cm_params);
+        image_gaussian_return =
+            world_gaussian_to_image_gaussian_unscented_transform_shutter_pose(
+                camera_model, rs_params, ut_params, mean, scale, quat);
+    } else if (camera_model_type == CameraModelType::LIDAR) {
+        assert(lidar_coeffs);
+        RowOffsetStructuredSpinningLidarModel camera_model(*lidar_coeffs);
         image_gaussian_return =
             world_gaussian_to_image_gaussian_unscented_transform_shutter_pose(
                 camera_model, rs_params, ut_params, mean, scale, quat);
@@ -163,10 +230,30 @@ __global__ void projection_ut_3dgs_fused_kernel(
         return;
     }
 
+    // The UT center covariance weight can be very negative (e.g. ≈ -96 with
+    // default alpha=0.1).  This means the UT covariance estimate is not
+    // guaranteed positive-semidefinite — a diagonal entry can be negative even
+    // when the determinant is positive.  Cull these: the UT has failed to
+    // produce a valid 2D covariance for this Gaussian/camera combination, and
+    // sqrtf(negative diagonal) below would produce NaN.
+    if (covar2d[0][0] < 0.f || covar2d[1][1] < 0.f) {
+        radii[idx * 2] = 0;
+        radii[idx * 2 + 1] = 0;
+        return;
+    }
+
     // compute the inverse of the 2d covariance
     mat2 covar2d_inv = glm::inverse(covar2d);
 
-    float extend = 3.33f;
+    float extend = GAUSSIAN_EXTEND;
+    // Note: the optimizations from StopThePop (https://arxiv.org/pdf/2402.00525) give identical
+    // results when the Gaussian's contribution is evaluated in 2D from the projected 2D Gaussian.
+    // However, with UT, the Gaussian's contribution is evaluated in 3D by intersecting the ray
+    // with the 3D Gaussian.  As a result, the 2D culling criteria uses an approximation of what the
+    // projected Gaussian would look like.  Therefore, this 2D-based culling can eliminate Gaussians
+    // which would have a contribution in the 3D space and produce slightly different results,
+    // especially with very non-linear projections / distortions.  Using these optimizations is
+    // therefore a compromise between performance and quality, which is still reasonable for most cases.
     if (opacities != nullptr) {
         float opacity = opacities[bid * N + gid];
         opacity *= compensation;
@@ -177,7 +264,7 @@ __global__ void projection_ut_3dgs_fused_kernel(
         }
         // Compute opacity-aware bounding box.
         // https://arxiv.org/pdf/2402.00525 Section B.2
-        extend = min(extend, sqrt(2.0f * __logf(opacity / ALPHA_THRESHOLD)));
+        extend = min(GAUSSIAN_EXTEND, sqrt(2.0f * __logf(opacity / ALPHA_THRESHOLD)));
     }
 
     // compute tight rectangular bounding box (non differentiable)
@@ -195,20 +282,29 @@ __global__ void projection_ut_3dgs_fused_kernel(
         return;
     }
 
-    // mask out gaussians outside the image region
-    if (mean2d.x + radius_x <= 0 || mean2d.x - radius_x >= image_width ||
-        mean2d.y + radius_y <= 0 || mean2d.y - radius_y >= image_height) {
-        radii[idx * 2] = 0;
-        radii[idx * 2 + 1] = 0;
-        return;
+    if(camera_model_type == CameraModelType::LIDAR) {
+        // LIDAR culling is performed inside world_gaussian_to_image_gaussian_unscented_transform_shutter_pose,
+        // so no additional 2D image-region masking is needed here.
     }
+    else {
+        // mask out gaussians outside the image region
+        if (mean2d.x + radius_x <= 0 || mean2d.x - radius_x >= image_width ||
+            mean2d.y + radius_y <= 0 || mean2d.y - radius_y >= image_height) {
+            radii[idx * 2] = 0;
+            radii[idx * 2 + 1] = 0;
+            return;
+        }
+    }
+
+    // Depth for sorting: z-depth (global_z_order=true) or Euclidean distance (global_z_order=false)
+    float depth = global_z_order ? mean_c.z : glm::length(mean_c);
 
     // write to outputs
     radii[idx * 2] = (int32_t)radius_x;
     radii[idx * 2 + 1] = (int32_t)radius_y;
     means2d[idx * 2] = mean2d.x;
     means2d[idx * 2 + 1] = mean2d.y;
-    depths[idx] = mean_c.z;
+    depths[idx] = depth;
     conics[idx * 3] = covar2d_inv[0][0];
     conics[idx * 3 + 1] = covar2d_inv[0][1];
     conics[idx * 3 + 2] = covar2d_inv[1][1];
@@ -233,13 +329,16 @@ void launch_projection_ut_3dgs_fused_kernel(
     const float far_plane,
     const float radius_clip,
     const CameraModelType camera_model,
+    const bool global_z_order,
     // uncented transform
-    const UnscentedTransformParameters ut_params,
+    const c10::intrusive_ptr<UnscentedTransformParameters>& ut_params,
     ShutterType rs_type,
     const at::optional<at::Tensor> radial_coeffs,     // [..., C, 6] or [..., C, 4] optional
     const at::optional<at::Tensor> tangential_coeffs, // [..., C, 2] optional
     const at::optional<at::Tensor> thin_prism_coeffs, // [..., C, 4] optional
-    const FThetaCameraDistortionParameters ftheta_coeffs, // shared parameters for all cameras
+    const c10::intrusive_ptr<FThetaCameraDistortionParameters> &ftheta_coeffs, // shared parameters for all cameras
+    const at::optional<c10::intrusive_ptr<RowOffsetStructuredSpinningLidarModelParametersExt>> &lidar_coeffs,
+    const at::optional<c10::intrusive_ptr<extdist::BivariateWindshieldModelParameters>> &external_distortion_params, // external distortion parameters
     // outputs
     at::Tensor radii,                      // [..., C, N, 2]
     at::Tensor means2d,                    // [..., C, N, 2]
@@ -259,6 +358,21 @@ void launch_projection_ut_3dgs_fused_kernel(
     if (n_elements == 0) {
         // skip the kernel launch if there are no elements
         return;
+    }
+
+    FThetaCameraDistortionDeviceParams ftheta_device_coeffs(*ftheta_coeffs);
+    cuda::std::optional<extdist::BivariateWindshieldModelDeviceParams> external_distortion_device_params = cuda::std::nullopt;
+    if (external_distortion_params.has_value()) {
+        external_distortion_device_params = extdist::BivariateWindshieldModelDeviceParams(*external_distortion_params.value());
+    }
+
+    cuda::std::optional<RowOffsetStructuredSpinningLidarModelParametersExtDevice> lidar_device_coeffs = cuda::std::nullopt;
+    if (lidar_coeffs.has_value()) {
+        TORCH_CHECK(camera_model == CameraModelType::LIDAR, "If lidar sensor coefficients are given, the camera model must be lidar");
+        lidar_device_coeffs = RowOffsetStructuredSpinningLidarModelParametersExtDevice(*lidar_coeffs.value());
+    }
+    else {
+        TORCH_CHECK(camera_model != CameraModelType::LIDAR, "If the sensor isn't lidar, lidar coefficients must not be given");
     }
 
     projection_ut_3dgs_fused_kernel<float>
@@ -283,8 +397,9 @@ void launch_projection_ut_3dgs_fused_kernel(
             far_plane,
             radius_clip,
             camera_model,
+            global_z_order,
             // uncented transform
-            ut_params,
+            *ut_params,
             rs_type,
             radial_coeffs.has_value()
                 ? radial_coeffs.value().data_ptr<float>()
@@ -295,7 +410,9 @@ void launch_projection_ut_3dgs_fused_kernel(
             thin_prism_coeffs.has_value()
                 ? thin_prism_coeffs.value().data_ptr<float>()
                 : nullptr,
-            ftheta_coeffs,
+            ftheta_device_coeffs,
+            lidar_device_coeffs,
+            external_distortion_device_params,
             radii.data_ptr<int32_t>(),
             means2d.data_ptr<float>(),
             depths.data_ptr<float>(),
@@ -306,5 +423,6 @@ void launch_projection_ut_3dgs_fused_kernel(
         );
 }
 
-
 } // namespace gsplat
+
+#endif

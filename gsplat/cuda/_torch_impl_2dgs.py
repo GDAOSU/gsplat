@@ -1,10 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2024-2025 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import math
 from typing import Optional, Tuple
 
 import torch
 from torch import Tensor
 
-from gsplat.cuda._torch_impl import _quat_scale_to_matrix
+from gsplat.cuda._math import _quat_scale_to_matrix
+from gsplat.cuda._constants import MAX_ALPHA
 
 
 def _fully_fused_projection_2dgs(
@@ -167,7 +184,7 @@ def accumulate_2dgs(
     sigmas = 0.5 * torch.minimum(sigmas_3d, sigmas_2d)  # [M]
 
     alphas = torch.clamp_max(
-        opacities[image_ids, gaussian_ids] * torch.exp(-sigmas), 0.999
+        opacities[image_ids, gaussian_ids] * torch.exp(-sigmas), MAX_ALPHA
     )
 
     indices = image_ids * image_height * image_width + pixel_ids
