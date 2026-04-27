@@ -259,128 +259,133 @@ def test_ortho_projection_2dgs_normals_stay_in_world_space_for_affine_camera():
     torch.testing.assert_close(normals, expected_normals)
 
 
-# @pytest.mark.skipif(not torch.cuda.is_available(), reason="No CUDA device")
-# @pytest.mark.parametrize("sparse_grad", [False])
-# @pytest.mark.parametrize("batch_dims", [(), (2,), (1, 2)])
-# def test_fully_fused_projection_packed_2dgs(
-#     test_data, sparse_grad: bool, batch_dims: Tuple[int, ...]
-# ):
-#     from gsplat.cuda._wrapper import fully_fused_projection_2dgs
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="No CUDA device")
+@pytest.mark.parametrize(
+    "sparse_grad,batch_dims",
+    [(False, ()), (False, (2,)), (False, (1, 2)), (True, ())],
+)
+def test_fully_fused_projection_packed_ortho_2dgs(
+    test_data, sparse_grad: bool, batch_dims: Tuple[int, ...]
+):
+    from gsplat.cuda._wrapper import fully_fused_projection_2dgs
 
-#     torch.manual_seed(42)
+    torch.manual_seed(42)
 
-#     test_data = expand(test_data, batch_dims)
-#     Ks = test_data["Ks"]
-#     viewmats = test_data["viewmats"]
-#     height = test_data["height"]
-#     width = test_data["width"]
-#     quats = test_data["quats"]
-#     scales = test_data["scales"]
-#     means = test_data["means"]
-#     viewmats.requires_grad = True
-#     quats.requires_grad = True
-#     scales.requires_grad = True
-#     means.requires_grad = True
+    test_data = expand(test_data, batch_dims)
+    Ks = test_data["Ks"]
+    viewmats = test_data["viewmats"]
+    height = test_data["height"]
+    width = test_data["width"]
+    quats = test_data["quats"]
+    scales = test_data["scales"]
+    means = test_data["means"]
+    viewmats.requires_grad = True
+    quats.requires_grad = True
+    scales.requires_grad = True
+    means.requires_grad = True
 
-#     (
-#         batch_ids,
-#         camera_ids,
-#         gaussian_ids,
-#         radii,
-#         means2d,
-#         depths,
-#         ray_transforms,
-#         normals,
-#     ) = fully_fused_projection_2dgs(
-#         means,
-#         quats,
-#         scales,
-#         viewmats,
-#         Ks,
-#         width,
-#         height,
-#         packed=True,
-#         sparse_grad=sparse_grad,
-#     )
+    (
+        batch_ids,
+        camera_ids,
+        gaussian_ids,
+        radii,
+        means2d,
+        depths,
+        ray_transforms,
+        normals,
+    ) = fully_fused_projection_2dgs(
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        width,
+        height,
+        camera_model="ortho",
+        packed=True,
+        sparse_grad=sparse_grad,
+        near_plane=-1e6,
+        far_plane=1e6,
+    )
 
-#     _radii, _means2d, _depths, _ray_transforms, _normals = fully_fused_projection_2dgs(
-#         means,
-#         quats,
-#         scales,
-#         viewmats,
-#         Ks,
-#         width,
-#         height,
-#         packed=False,
-#     )
+    _radii, _means2d, _depths, _ray_transforms, _normals = fully_fused_projection_2dgs(
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        width,
+        height,
+        camera_model="ortho",
+        packed=False,
+        near_plane=-1e6,
+        far_plane=1e6,
+    )
 
-#     B = math.prod(batch_dims)
-#     N = means.shape[-2]
-#     C = viewmats.shape[-3]
+    B = math.prod(batch_dims)
+    N = means.shape[-2]
+    C = viewmats.shape[-3]
 
-#     # recover packed tensors to full matrices for testing
-#     __radii = torch.sparse_coo_tensor(
-#         torch.stack([batch_ids, camera_ids, gaussian_ids]), radii, (B, C, N, 2)
-#     ).to_dense()
-#     __radii = __radii.reshape(batch_dims + (C, N, 2))
-#     __means2d = torch.sparse_coo_tensor(
-#         torch.stack([batch_ids, camera_ids, gaussian_ids]), means2d, (B, C, N, 2)
-#     ).to_dense()
-#     __means2d = __means2d.reshape(batch_dims + (C, N, 2))
-#     __depths = torch.sparse_coo_tensor(
-#         torch.stack([batch_ids, camera_ids, gaussian_ids]), depths, (B, C, N)
-#     ).to_dense()
-#     __depths = __depths.reshape(batch_dims + (C, N))
-#     __ray_transforms = torch.sparse_coo_tensor(
-#         torch.stack([batch_ids, camera_ids, gaussian_ids]),
-#         ray_transforms,
-#         (B, C, N, 3, 3),
-#     ).to_dense()
-#     __ray_transforms = __ray_transforms.reshape(batch_dims + (C, N, 3, 3))
-#     __normals = torch.sparse_coo_tensor(
-#         torch.stack([batch_ids, camera_ids, gaussian_ids]), normals, (B, C, N, 3)
-#     ).to_dense()
-#     __normals = __normals.reshape(batch_dims + (C, N, 3))
+    __radii = torch.sparse_coo_tensor(
+        torch.stack([batch_ids, camera_ids, gaussian_ids]), radii, (B, C, N, 2)
+    ).to_dense()
+    __radii = __radii.reshape(batch_dims + (C, N, 2))
+    __means2d = torch.sparse_coo_tensor(
+        torch.stack([batch_ids, camera_ids, gaussian_ids]), means2d, (B, C, N, 2)
+    ).to_dense()
+    __means2d = __means2d.reshape(batch_dims + (C, N, 2))
+    __depths = torch.sparse_coo_tensor(
+        torch.stack([batch_ids, camera_ids, gaussian_ids]), depths, (B, C, N)
+    ).to_dense()
+    __depths = __depths.reshape(batch_dims + (C, N))
+    __ray_transforms = torch.sparse_coo_tensor(
+        torch.stack([batch_ids, camera_ids, gaussian_ids]),
+        ray_transforms,
+        (B, C, N, 3, 3),
+    ).to_dense()
+    __ray_transforms = __ray_transforms.reshape(batch_dims + (C, N, 3, 3))
+    __normals = torch.sparse_coo_tensor(
+        torch.stack([batch_ids, camera_ids, gaussian_ids]), normals, (B, C, N, 3)
+    ).to_dense()
+    __normals = __normals.reshape(batch_dims + (C, N, 3))
 
-#     sel = ((__radii > 0) & (_radii > 0)).all(dim=-1)
-#     torch.testing.assert_close(__radii[sel], _radii[sel], rtol=0, atol=1)
-#     torch.testing.assert_close(__means2d[sel], _means2d[sel], rtol=1e-4, atol=1e-4)
-#     torch.testing.assert_close(__depths[sel], _depths[sel], rtol=1e-4, atol=1e-4)
-#     torch.testing.assert_close(
-#         __ray_transforms[sel], _ray_transforms[sel], rtol=1e-4, atol=1e-4
-#     )
-#     torch.testing.assert_close(__normals[sel], _normals[sel], rtol=1e-4, atol=1e-4)
+    sel = ((__radii > 0) & (_radii > 0)).all(dim=-1)
+    torch.testing.assert_close(__radii[sel], _radii[sel], rtol=0, atol=1)
+    torch.testing.assert_close(__means2d[sel], _means2d[sel], rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(__depths[sel], _depths[sel], rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(__ray_transforms[sel], _ray_transforms[sel], rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(__normals[sel], _normals[sel], rtol=1e-4, atol=1e-4)
 
-#     # backward
-#     v_means2d = torch.randn_like(_means2d) * sel[..., None]
-#     v_depths = torch.randn_like(_depths) * sel
-#     v_ray_transforms = torch.randn_like(_ray_transforms) * sel[..., None, None]
-#     v_normals = torch.randn_like(_normals) * sel[..., None]
-#     _v_viewmats, _v_quats, _v_scales, _v_means = torch.autograd.grad(
-#         (_means2d * v_means2d).sum()
-#         + (_depths * v_depths).sum()
-#         + (_ray_transforms * v_ray_transforms).sum()
-#         + (_normals * v_normals).sum(),
-#         (viewmats, quats, scales, means),
-#         retain_graph=True,
-#     )
-#     v_viewmats, v_quats, v_scales, v_means = torch.autograd.grad(
-#         (means2d * v_means2d[(__radii > 0).all(dim=-1)]).sum()
-#         + (depths * v_depths[(__radii > 0).all(dim=-1)]).sum()
-#         + (ray_transforms * v_ray_transforms[(__radii > 0).all(dim=-1)]).sum()
-#         + (normals * v_normals[(__radii > 0).all(dim=-1)]).sum(),
-#         (viewmats, quats, scales, means),
-#         retain_graph=True,
-#     )
-#     if sparse_grad:
-#         v_quats = v_quats.to_dense()
-#         v_scales = v_scales.to_dense()
-#         v_means = v_means.to_dense()
+    v_means2d = torch.randn_like(_means2d) * sel[..., None]
+    v_depths = torch.randn_like(_depths) * sel
+    v_ray_transforms = torch.randn_like(_ray_transforms) * sel[..., None, None]
+    v_normals = torch.randn_like(_normals) * sel[..., None]
+    _v_viewmats, _v_quats, _v_scales, _v_means = torch.autograd.grad(
+        (_means2d * v_means2d).sum()
+        + (_depths * v_depths).sum()
+        + (_ray_transforms * v_ray_transforms).sum()
+        + (_normals * v_normals).sum(),
+        (viewmats, quats, scales, means),
+        retain_graph=True,
+    )
+    packed_sel = (__radii > 0).all(dim=-1)
+    v_viewmats, v_quats, v_scales, v_means = torch.autograd.grad(
+        (means2d * v_means2d[packed_sel]).sum()
+        + (depths * v_depths[packed_sel]).sum()
+        + (ray_transforms * v_ray_transforms[packed_sel]).sum()
+        + (normals * v_normals[packed_sel]).sum(),
+        (viewmats, quats, scales, means),
+        retain_graph=True,
+    )
+    if sparse_grad:
+        v_quats = v_quats.to_dense()
+        v_scales = v_scales.to_dense()
+        v_means = v_means.to_dense()
 
-#     torch.testing.assert_close(v_viewmats, _v_viewmats, rtol=1e-2, atol=1e-2)
-#     torch.testing.assert_close(v_scales, _v_scales, rtol=5e-2, atol=5e-2)
-#     torch.testing.assert_close(v_means, _v_means, rtol=1e-3, atol=1e-3)
-#     torch.testing.assert_close(v_quats, _v_quats, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(v_viewmats, _v_viewmats, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(v_scales[..., :2], _v_scales[..., :2], rtol=1e-1, atol=2e-1)
+    torch.testing.assert_close(v_means, _v_means, rtol=1e-2, atol=6e-2)
+    torch.testing.assert_close(v_quats, _v_quats, rtol=2e-1, atol=1e-2)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="No CUDA device")

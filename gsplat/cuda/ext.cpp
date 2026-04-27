@@ -61,6 +61,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("ortho_projection_2dgs_fused_bwd", &gsplat::ortho_projection_2dgs_fused_bwd);
     m.def("projection_2dgs_packed_fwd", &gsplat::projection_2dgs_packed_fwd);
     m.def("projection_2dgs_packed_bwd", &gsplat::projection_2dgs_packed_bwd);
+    m.def("ortho_projection_2dgs_packed_fwd", &gsplat::ortho_projection_2dgs_packed_fwd);
+    m.def("ortho_projection_2dgs_packed_bwd", &gsplat::ortho_projection_2dgs_packed_bwd);
 
     m.def(
         "rasterize_to_pixels_2dgs_fwd", &gsplat::rasterize_to_pixels_2dgs_fwd

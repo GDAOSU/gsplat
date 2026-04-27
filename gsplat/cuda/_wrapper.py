@@ -2088,8 +2088,7 @@ class _FullyFusedProjectionPacked2DGS(torch.autograd.Function):
         if camera_model == "pinhole":
             func_name = "projection_2dgs_packed_fwd"
         elif camera_model == "ortho":
-            # func_name = "ortho_projection_2dgs_packed_fwd"
-            raise ValueError(f"Ortho camera model is not supported in packed mode currently.")
+            func_name = "ortho_projection_2dgs_packed_fwd"
         else:
             raise ValueError(f"Unsupported camera model: {camera_model}")
         
@@ -2173,8 +2172,7 @@ class _FullyFusedProjectionPacked2DGS(torch.autograd.Function):
         if camera_model == "pinhole":
             func_name = "projection_2dgs_packed_bwd"
         elif camera_model == "ortho":
-            # func_name = "ortho_projection_2dgs_packed_bwd"
-            raise ValueError("Ortho camera model is not supported in packed mode currently.")
+            func_name = "ortho_projection_2dgs_packed_bwd"
         else:
             raise ValueError(f"Unsupported camera model: {camera_model}")
         
