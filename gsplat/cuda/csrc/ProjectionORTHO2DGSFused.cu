@@ -57,8 +57,8 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
                                       // that transform xy-planes in pixel
                                       // spaces into splat coordinates (WH)^T in
                                       // equation (9) in paper
-    scalar_t
-        *__restrict__ normals_ptr // [B, C, N, 3] The normals in camera spaces.
+    scalar_t *__restrict__ normals_ptr // [B, C, N, 3] World-space normals,
+                                       // flipped to face the affine camera.
 ) {
 
     /**
@@ -203,7 +203,8 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
         return;
     }
 
-    // normals dual visible
+    // Keep ortho normals in world space. A general affine camera can include
+    // scale/shear, so applying A33 would not preserve true surface normals.
     vec3 normal = R33[2]; // the normal is in world space
     // flip normal if it is pointing away from the camera
     const float multiplier = glm::dot(-normal, glm::row(A33, 2)) > 0 ? 1 : -1;

@@ -1883,7 +1883,7 @@ def fully_fused_projection_2dgs(
         - **means**. Projected Gaussian means in 2D. [nnz, 2]
         - **depths**. The z-depth of the projected Gaussians. [nnz]
         - **ray_transforms**. transformation matrices that transforms xy-planes in pixel spaces into splat coordinates (WH)^T in equation (9) in paper [nnz, 3, 3]
-        - **normals**. The normals in camera spaces. [nnz, 3]
+        - **normals**. The normals in camera spaces for pinhole cameras. For `camera_model="ortho"`, these are world-space normals flipped to face the affine camera. [nnz, 3]
 
         If `packed` is False:
 
@@ -1891,7 +1891,7 @@ def fully_fused_projection_2dgs(
         - **means**. Projected Gaussian means in 2D. [..., C, N, 2]
         - **depths**. The z-depth of the projected Gaussians. [..., C, N]
         - **ray_transforms**. transformation matrices that transforms xy-planes in pixel spaces into splat coordinates [..., C, N, 3, 3]
-        - **normals**. The normals in camera spaces. [..., C, N, 3]
+        - **normals**. The normals in camera spaces for pinhole cameras. For `camera_model="ortho"`, these are world-space normals flipped to face the affine camera. [..., C, N, 3]
 
     """
     batch_dims = means.shape[:-2]

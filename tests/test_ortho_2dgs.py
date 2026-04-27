@@ -211,6 +211,54 @@ def test_ortho_projection_2dgs_singular_transform_has_zero_radii():
     torch.testing.assert_close(radii, expected)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="No CUDA device")
+def test_ortho_projection_2dgs_normals_stay_in_world_space_for_affine_camera():
+    from gsplat.cuda._torch_impl_ortho_2dgs import _fully_fused_ortho_projection_2dgs
+    from gsplat.cuda._wrapper import fully_fused_projection_2dgs
+
+    width, height = 256, 256
+    means = torch.tensor([[0.0, 0.0, 1.0]], device=device)
+    quats = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=device)
+    scales = torch.tensor([[0.08, 0.11, 1.0]], device=device)
+    viewmats = torch.tensor(
+        [
+            [
+                [2.0, 0.5, 0.1, 0.0],
+                [-0.3, 1.25, 0.2, 0.0],
+                [0.25, -0.4, -1.5, 3.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            [
+                [2.0, 0.5, 0.1, 0.0],
+                [-0.3, 1.25, 0.2, 0.0],
+                [0.25, -0.4, 1.5, 3.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        ],
+        device=device,
+    )
+    Ks = torch.tensor(
+        [
+            [[100.0, 0.0, 128.0], [0.0, 100.0, 128.0], [0.0, 0.0, 1.0]],
+            [[100.0, 0.0, 128.0], [0.0, 100.0, 128.0], [0.0, 0.0, 1.0]],
+        ],
+        device=device,
+    )
+    expected_normals = torch.tensor([[[0.0, 0.0, 1.0]], [[0.0, 0.0, -1.0]]], device=device)
+
+    _radii, *_, _normals = _fully_fused_ortho_projection_2dgs(
+        means, quats, scales, viewmats, Ks, width, height, near_plane=0.0, far_plane=10.0
+    )
+    radii, *_, normals = fully_fused_projection_2dgs(
+        means, quats, scales, viewmats, Ks, width, height, camera_model="ortho", near_plane=0.0, far_plane=10.0
+    )
+
+    assert (radii > 0).all()
+    assert (_radii > 0).all()
+    torch.testing.assert_close(_normals, expected_normals)
+    torch.testing.assert_close(normals, expected_normals)
+
+
 # @pytest.mark.skipif(not torch.cuda.is_available(), reason="No CUDA device")
 # @pytest.mark.parametrize("sparse_grad", [False])
 # @pytest.mark.parametrize("batch_dims", [(), (2,), (1, 2)])

@@ -48,8 +48,9 @@ def _fully_fused_ortho_projection_2dgs(
     p_camera = torch.einsum("...cij,...nj->...cni", A33, means) + b31[..., None, :]  # [..., C, N, 3]
     p_image = torch.einsum("...cij,...cnj->...cni", Ks[..., :2, :2], p_camera[..., :2]) + Ks[..., :2, 2].unsqueeze(-2)
 
-    # compute normals
-    normals_ = RS33[..., 2].unsqueeze(-3).expand_as(p_camera)  # [..., C, N, 3] # in world frame
+    # Keep ortho normals in world space. A general affine camera can include
+    # scale/shear, so applying A33 would not preserve true surface normals.
+    normals_ = RS33[..., 2].unsqueeze(-3).expand_as(p_camera)  # [..., C, N, 3]
     cos = torch.einsum("...Ni,...i->...N", -normals_, A33[..., 2, :3])
     cos = cos.reshape(batch_dims + (C, N, 1))
     multiplier = torch.where(cos > 0, torch.tensor(1.0), torch.tensor(-1.0))
