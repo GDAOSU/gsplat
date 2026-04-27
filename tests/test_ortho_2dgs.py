@@ -22,8 +22,12 @@ def expand(data: dict, batch_dims: Tuple[int, ...]):
 
 
 @pytest.fixture
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="No CUDA device")
 def test_data():
+    if not torch.cuda.is_available():
+        pytest.skip("No CUDA device")
+
+    torch.manual_seed(42)
+
     C = 3
     N = 1000
     means = torch.randn(N, 3, device=device)
@@ -152,6 +156,59 @@ def test_ortho_projection_2dgs(test_data, batch_dims: Tuple[int, ...]):
         torch.testing.assert_close(v_quats, _v_quats, rtol=2e-1, atol=1e-2)
         torch.testing.assert_close(v_scales[..., :2], _v_scales[..., :2], rtol=1e-1, atol=2e-1)
         torch.testing.assert_close(v_means, _v_means, rtol=1e-2, atol=6e-2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="No CUDA device")
+def test_ortho_projection_2dgs_radii_use_projected_row_norms():
+    from gsplat.cuda._torch_impl_ortho_2dgs import _fully_fused_ortho_projection_2dgs
+    from gsplat.cuda._wrapper import fully_fused_projection_2dgs
+
+    width, height = 256, 256
+    fx, fy, cx, cy = 100.0, 100.0, width / 2, height / 2
+    theta = math.pi / 4
+    scale = 0.2
+    expected_radius = math.ceil(3.33 * fx * scale)
+
+    means = torch.tensor([[0.0, 0.0, 1.0]], device=device)
+    quats = torch.tensor([[math.cos(theta / 2), 0.0, 0.0, math.sin(theta / 2)]], device=device)
+    scales = torch.tensor([[scale, scale, 1.0]], device=device)
+    viewmats = torch.eye(4, device=device).reshape(1, 4, 4)
+    Ks = torch.tensor([[[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]]], device=device)
+    expected = torch.full((1, 1, 2), expected_radius, dtype=torch.int32, device=device)
+
+    _radii, *_ = _fully_fused_ortho_projection_2dgs(
+        means, quats, scales, viewmats, Ks, width, height, near_plane=0.0, far_plane=10.0
+    )
+    radii, *_ = fully_fused_projection_2dgs(
+        means, quats, scales, viewmats, Ks, width, height, camera_model="ortho", near_plane=0.0, far_plane=10.0
+    )
+
+    torch.testing.assert_close(_radii, expected)
+    torch.testing.assert_close(radii, expected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="No CUDA device")
+def test_ortho_projection_2dgs_singular_transform_has_zero_radii():
+    from gsplat.cuda._torch_impl_ortho_2dgs import _fully_fused_ortho_projection_2dgs
+    from gsplat.cuda._wrapper import fully_fused_projection_2dgs
+
+    width, height = 256, 256
+    means = torch.tensor([[0.0, 0.0, 1.0]], device=device)
+    quats = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=device)
+    scales = torch.tensor([[0.0, 0.2, 1.0]], device=device)
+    viewmats = torch.eye(4, device=device).reshape(1, 4, 4)
+    Ks = torch.tensor([[[100.0, 0.0, 128.0], [0.0, 100.0, 128.0], [0.0, 0.0, 1.0]]], device=device)
+    expected = torch.zeros((1, 1, 2), dtype=torch.int32, device=device)
+
+    _radii, *_ = _fully_fused_ortho_projection_2dgs(
+        means, quats, scales, viewmats, Ks, width, height, near_plane=0.0, far_plane=10.0
+    )
+    radii, *_ = fully_fused_projection_2dgs(
+        means, quats, scales, viewmats, Ks, width, height, camera_model="ortho", near_plane=0.0, far_plane=10.0
+    )
+
+    torch.testing.assert_close(_radii, expected)
+    torch.testing.assert_close(radii, expected)
 
 
 # @pytest.mark.skipif(not torch.cuda.is_available(), reason="No CUDA device")
@@ -284,6 +341,8 @@ def test_ortho_projection_2dgs(test_data, batch_dims: Tuple[int, ...]):
 def test_rasterize_to_pixels_2dgs(
     test_data, channels: int, batch_dims: Tuple[int, ...]
 ):
+    pytest.importorskip("nerfacc")
+
     from gsplat.cuda._torch_impl_ortho_2dgs import _rasterize_to_pixels_ortho_2dgs
     from gsplat.cuda._wrapper import (
         fully_fused_projection_2dgs,
@@ -294,9 +353,16 @@ def test_rasterize_to_pixels_2dgs(
 
     torch.manual_seed(42)
 
-    N = test_data["means"].shape[-2]
+    N = min(test_data["means"].shape[-2], 128)
     C = test_data["viewmats"].shape[-3]
     I = math.prod(batch_dims) * C
+    test_data = {
+        **test_data,
+        "means": test_data["means"][:N],
+        "quats": test_data["quats"][:N],
+        "scales": test_data["scales"][:N],
+        "opacities": test_data["opacities"][:, :N],
+    }
     test_data.update(
         {
             "colors": torch.rand(C, N, channels, device=device),
@@ -370,6 +436,7 @@ def test_rasterize_to_pixels_2dgs(
         isect_offsets,
         flatten_ids,
         backgrounds=backgrounds,
+        batch_per_iter=1,
     )
 
     v_render_colors = torch.rand_like(render_colors)

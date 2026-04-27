@@ -62,23 +62,22 @@ def _fully_fused_ortho_projection_2dgs(
     M_u2i[..., 2, 2] = 1.0
 
     # Check if M_u2i is singular. This could happen if the surfel is orthogonal to the camera plane.
-    valid = torch.linalg.det(M_u2i) > eps
+    det_M = torch.linalg.det(M_u2i)
+    valid = torch.abs(det_M) > eps
 
-    M_i2u = torch.linalg.inv(M_u2i)  # [..., C, N, 3, 3]
-    # compute the AABB of gaussian
-    test = torch.tensor([1.0, 1.0, 1.0], device=means.device).expand(batch_dims + (1, 1, 3))
-    tmp_p = torch.einsum("...ij,...j->...i", M_u2i[..., :2, :], test)
+    eye = torch.eye(3, device=means.device, dtype=means.dtype)
+    M_i2u = torch.linalg.inv(torch.where(valid[..., None, None], M_u2i, eye))  # [..., C, N, 3, 3]
 
     means2d = torch.einsum("...cij,...cnj->...cni", Ks[..., :2, :2], p_camera[..., :2]) + Ks[..., :2, 2].unsqueeze(
         -2
     )  # [..., C, N, 2]
 
-    extents = torch.abs(tmp_p - means2d).clamp_min(1e-2)  # [..., C, N, 2]
+    extents = torch.linalg.norm(KARS22, dim=-1).clamp_min(1e-2)  # [..., C, N, 2]
 
     depths = p_camera[..., 2]  # [..., C, N]
     radius = torch.ceil(3.33 * extents)  # [..., C, N, 2]
 
-    valid = (depths > near_plane) & (depths < far_plane)
+    valid = valid & (depths > near_plane) & (depths < far_plane)
 
     radius[~valid] = 0.0
 

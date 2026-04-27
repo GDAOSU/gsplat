@@ -165,8 +165,11 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
 
     const scalar_t det_M = glm::determinant(M_u2i);
     // ill-conditioned primitives will have det(M) = 0.0f, we ignore them
-    if (det_M == 0.0f)
+    if (det_M == 0.0f) {
+        radii_ptr[idx * 2] = 0;
+        radii_ptr[idx * 2 + 1] = 0;
         return; // skip if the determinant is zero
+    }
 
     const mat3 M_i2u = glm::inverse(M_u2i);
     /**
@@ -174,10 +177,16 @@ __global__ void ortho_projection_2dgs_fused_fwd_kernel(
      * Compute AABB
      * ===============================================
      */
-    const vec3 tmp_p = M_u2i * vec3(1, 1, 1);
-    // ==============================================
-    const float radius_x = ceil(3.33f * max(1e-2, abs(tmp_p.x - p_image.x)));
-    const float radius_y = ceil(3.33f * max(1e-2, abs(tmp_p.y - p_image.y)));
+    const float extent_x = max(
+        1e-2f,
+        sqrtf(KARS[0][0] * KARS[0][0] + KARS[1][0] * KARS[1][0])
+    );
+    const float extent_y = max(
+        1e-2f,
+        sqrtf(KARS[0][1] * KARS[0][1] + KARS[1][1] * KARS[1][1])
+    );
+    const float radius_x = ceil(3.33f * extent_x);
+    const float radius_y = ceil(3.33f * extent_y);
 
     if (radius_x <= radius_clip && radius_y <= radius_clip) {
         radii_ptr[idx * 2] = 0;
