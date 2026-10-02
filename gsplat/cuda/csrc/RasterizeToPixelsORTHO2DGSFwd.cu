@@ -18,7 +18,7 @@ template <uint32_t CDIM, typename scalar_t>
 __global__ void rasterize_to_pixels_ortho_2dgs_fwd_kernel(
     const uint32_t I,        // number of images
     const uint32_t N,        // number of gaussians
-    const uint32_t n_isects, // number of ray-primitive intersections.
+    const int64_t n_isects, // number of ray-primitive intersections.
     const bool packed,       // whether the input tensors are packed
     const vec2
         *__restrict__ means2d, // Projected Gaussian means. [..., N, 2] if
@@ -46,7 +46,7 @@ __global__ void rasterize_to_pixels_ortho_2dgs_fwd_kernel(
     const uint32_t tile_size,
     const uint32_t tile_width,
     const uint32_t tile_height,
-    const int32_t
+    const int64_t
         *__restrict__ tile_offsets, // [..., tile_height, tile_width]    //
                                     // Intersection offsets outputs from
                                     // `isect_offset_encode()`, this is the
@@ -149,8 +149,8 @@ __global__ void rasterize_to_pixels_ortho_2dgs_fwd_kernel(
     // which gaussians to look through in this tile
 
     // print
-    int32_t range_start = tile_offsets[tile_id];
-    int32_t range_end =
+    int64_t range_start = tile_offsets[tile_id];
+    int64_t range_end =
         // see if this is the last tile in the image
         (image_id == I - 1) && (tile_id == tile_width * tile_height - 1)
             ? n_isects
@@ -194,7 +194,7 @@ __global__ void rasterize_to_pixels_ortho_2dgs_fwd_kernel(
     // The coefficient for volumetric rendering for our responsible pixel.
     float T = 1.0f;
     // index of most recent gaussian to write to this thread's pixel
-    uint32_t cur_idx = 0;
+    int64_t cur_idx = 0;
 
     // collect and process batches of gaussians
     // each thread loads one gaussian at a time before rasterizing its
@@ -209,7 +209,7 @@ __global__ void rasterize_to_pixels_ortho_2dgs_fwd_kernel(
 
     // keep track of median depth contribution
     float median_depth = 0.f;
-    uint32_t median_idx = 0.f;
+    int64_t median_idx = 0.f;
 
     /**
      * ==============================
@@ -233,8 +233,8 @@ __global__ void rasterize_to_pixels_ortho_2dgs_fwd_kernel(
 
         // each thread fetch 1 gaussian from front to back
         // index of gaussian to load
-        uint32_t batch_start = range_start + block_size * b;
-        uint32_t idx = batch_start + tr;
+        int64_t batch_start = range_start + block_size * b;
+        int64_t idx = batch_start + tr;
 
         // only threads within the range of the tile will fetch gaussians
         /**
@@ -293,7 +293,7 @@ __global__ void rasterize_to_pixels_ortho_2dgs_fwd_kernel(
          * and 2D projected gaussian kernels
          */
         // process gaussians in the current batch for this pixel
-        uint32_t batch_size = min(block_size, range_end - batch_start);
+        uint32_t batch_size = min(static_cast<int64_t>(block_size), range_end - batch_start);
         for (uint32_t t = 0; (t < batch_size) && !done; ++t) {
 
             const vec3 xy_opac = xy_opacity_batch[t];
@@ -436,7 +436,7 @@ void launch_rasterize_to_pixels_ortho_2dgs_fwd_kernel(
     uint32_t I = alphas.numel() / (image_height * image_width); // number of images
     uint32_t tile_height = tile_offsets.size(-2);
     uint32_t tile_width = tile_offsets.size(-1);
-    uint32_t n_isects = flatten_ids.size(0);
+    int64_t n_isects = flatten_ids.size(0);
 
     // Each block covers a tile on the image. In total there are
     // I * tile_height * tile_width blocks.
@@ -481,7 +481,7 @@ void launch_rasterize_to_pixels_ortho_2dgs_fwd_kernel(
             tile_size,
             tile_width,
             tile_height,
-            tile_offsets.data_ptr<int32_t>(),
+            tile_offsets.data_ptr<int64_t>(),
             flatten_ids.data_ptr<int32_t>(),
             renders.data_ptr<float>(),
             alphas.data_ptr<float>(),

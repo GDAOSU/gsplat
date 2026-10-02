@@ -12,11 +12,11 @@ namespace cg = cooperative_groups;
 
 template <typename scalar_t>
 __global__ void rasterize_to_indices_ortho_2dgs_kernel(
-    const uint32_t range_start,
-    const uint32_t range_end,
+    const int64_t range_start,
+    const int64_t range_end,
     const uint32_t I,
     const uint32_t N,
-    const uint32_t n_isects,
+    const int64_t n_isects,
     const vec2 *__restrict__ means2d,            // [..., N, 2]
     const scalar_t *__restrict__ M_i2u, // [..., N, 3, 3]
     const scalar_t *__restrict__ opacities,      // [..., N]
@@ -25,7 +25,7 @@ __global__ void rasterize_to_indices_ortho_2dgs_kernel(
     const uint32_t tile_size,
     const uint32_t tile_width,
     const uint32_t tile_height,
-    const int32_t *__restrict__ tile_offsets, // [..., tile_height, tile_width]
+    const int64_t *__restrict__ tile_offsets, // [..., tile_height, tile_width]
     const int32_t *__restrict__ flatten_ids,  // [n_isects]
     const scalar_t 
         *__restrict__ transmittances,         // [..., image_height, image_width]
@@ -58,7 +58,7 @@ __global__ void rasterize_to_indices_ortho_2dgs_kernel(
     bool done = !inside;
 
     bool first_pass = chunk_starts == nullptr;
-    int32_t base;
+    int64_t base;
     if (!first_pass && inside) {
         chunk_starts += image_id * image_height * image_width;
         base = chunk_starts[pix_id];
@@ -67,8 +67,8 @@ __global__ void rasterize_to_indices_ortho_2dgs_kernel(
     // have all threads in tile process the same gaussians in batches
     // first collect gaussians between range.x and range.y in batches
     // which gaussians to look through in this tile
-    int32_t isect_range_start = tile_offsets[tile_id];
-    int32_t isect_range_end =
+    int64_t isect_range_start = tile_offsets[tile_id];
+    int64_t isect_range_end =
         (image_id == I - 1) && (tile_id == tile_width * tile_height - 1)
             ? n_isects
             : tile_offsets[tile_id + 1];
@@ -109,7 +109,7 @@ __global__ void rasterize_to_indices_ortho_2dgs_kernel(
     uint32_t tr = block.thread_rank();
 
     int32_t cnt = 0;
-    for (uint32_t b = range_start; b < min(range_end, num_batches); ++b) {
+    for (int64_t b = range_start; b < min(range_end, static_cast<int64_t>(num_batches)); ++b) {
         // resync all threads before beginning next batch
         // end early if entire tile is done
         if (__syncthreads_count(done) >= block_size) {
@@ -118,8 +118,8 @@ __global__ void rasterize_to_indices_ortho_2dgs_kernel(
 
         // each thread fetch 1 gaussian from front to back
         // index of gaussian to load
-        uint32_t batch_start = isect_range_start + block_size * b;
-        uint32_t idx = batch_start + tr;
+        int64_t batch_start = isect_range_start + block_size * b;
+        int64_t idx = batch_start + tr;
         if (idx < isect_range_end) {
             int32_t g = flatten_ids[idx];
             id_batch[tr] = g;
@@ -142,7 +142,7 @@ __global__ void rasterize_to_indices_ortho_2dgs_kernel(
         block.sync();
 
         // process gaussians in the current batch for this pixel
-        uint32_t batch_size = min(block_size, isect_range_end - batch_start);
+        uint32_t batch_size = min(static_cast<int64_t>(block_size), isect_range_end - batch_start);
         for (uint32_t t = 0; (t < batch_size) && !done; ++t) {
             const vec3 xy_opac = xy_opacity_batch[t];
             const float opac = xy_opac.z;
@@ -225,7 +225,7 @@ void launch_rasterize_to_indices_ortho_2dgs_kernel(
     uint32_t I = means2d.numel() / (2 * N); // number of images
     uint32_t tile_height = tile_offsets.size(-2);
     uint32_t tile_width = tile_offsets.size(-1);
-    uint32_t n_isects = flatten_ids.size(0);
+    int64_t n_isects = flatten_ids.size(0);
 
     // Each block covers a tile on the image. In total there are
     // I * tile_height * tile_width blocks.
@@ -266,7 +266,7 @@ void launch_rasterize_to_indices_ortho_2dgs_kernel(
             tile_size,
             tile_width,
             tile_height,
-            tile_offsets.data_ptr<int32_t>(),
+            tile_offsets.data_ptr<int64_t>(),
             flatten_ids.data_ptr<int32_t>(),
             transmittances.data_ptr<float>(),
             chunk_starts.has_value() ? chunk_starts.value().data_ptr<int32_t>()

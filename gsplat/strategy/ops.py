@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2024 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright 2023-2026 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,8 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+import os
 import numpy as np
-from typing import Callable, Dict, List, Union
+from typing import TYPE_CHECKING, Callable, Dict, List, Union
 
 import torch
 import torch.nn.functional as F
@@ -23,6 +26,36 @@ from torch import Tensor
 from gsplat import quat_scale_to_covar_preci
 from gsplat.relocation import compute_relocation
 from gsplat.utils import normalized_quat_to_rotmat
+
+if TYPE_CHECKING:
+    from gsplat.scene import Scene
+
+_MCMC_BACKEND_TORCH = {"torch", "pytorch", "py"}
+_MCMC_BACKEND_CUDA = {"cuda", "native", ""}
+DEFAULT_MCMC_OPACITY_T = 0.005
+DEFAULT_MCMC_OPACITY_K = 100.0
+_raw = os.environ.get("GSPLAT_MCMC_BACKEND", "").strip().lower()
+_force_torch_backend = _raw in _MCMC_BACKEND_TORCH
+if _raw and _raw not in _MCMC_BACKEND_TORCH | _MCMC_BACKEND_CUDA:
+    import warnings
+
+    warnings.warn(
+        f"GSPLAT_MCMC_BACKEND={_raw!r} not recognised; using default (CUDA with"
+        f" fallback). Valid: {sorted(_MCMC_BACKEND_TORCH | _MCMC_BACKEND_CUDA)}",
+        stacklevel=2,
+    )
+
+
+def _resolve_noise_scale(noise_scale: float | None, scaler: float | None) -> float:
+    if noise_scale is None:
+        if scaler is None:
+            raise TypeError("noise_scale must be provided")
+        return float(scaler)
+    if scaler is not None and float(noise_scale) != float(scaler):
+        raise ValueError(
+            "noise_scale and scaler aliases were both provided with different values"
+        )
+    return float(noise_scale)
 
 
 @torch.no_grad()
@@ -110,6 +143,7 @@ def duplicate(
     optimizers: Dict[str, torch.optim.Optimizer],
     state: Dict[str, Tensor],
     mask: Tensor,
+    scene: Scene | None = None,
 ):
     """Inplace duplicate the Gaussian with the given mask.
 
@@ -133,6 +167,8 @@ def duplicate(
     for k, v in state.items():
         if isinstance(v, torch.Tensor):
             state[k] = torch.cat((v, v[sel]))
+    if scene is not None:
+        scene.on_duplicate(sel)
 
 
 @torch.no_grad()
@@ -142,6 +178,7 @@ def split(
     state: Dict[str, Tensor],
     mask: Tensor,
     revised_opacity: bool = False,
+    scene: Scene | None = None,
 ):
     """Inplace split the Gaussian with the given mask.
 
@@ -193,6 +230,8 @@ def split(
             repeats = [2] + [1] * (v.dim() - 1)
             v_new = v[sel].repeat(repeats)
             state[k] = torch.cat((v[rest], v_new))
+    if scene is not None:
+        scene.on_split(sel, rest)
 
 
 @torch.no_grad()
@@ -201,6 +240,7 @@ def remove(
     optimizers: Dict[str, torch.optim.Optimizer],
     state: Dict[str, Tensor],
     mask: Tensor,
+    scene: Scene | None = None,
 ):
     """Inplace remove the Gaussian with the given mask.
 
@@ -223,6 +263,8 @@ def remove(
     for k, v in state.items():
         if isinstance(v, torch.Tensor):
             state[k] = v[sel]
+    if scene is not None:
+        scene.on_remove(mask)
 
 
 @torch.no_grad()
@@ -264,6 +306,7 @@ def relocate(
     mask: Tensor,
     binoms: Tensor,
     min_opacity: float = 0.005,
+    scene: Scene | None = None,
 ):
     """Inplace relocate some dead Gaussians to the lives ones.
 
@@ -280,7 +323,6 @@ def relocate(
     n = len(dead_indices)
 
     # Sample for new GSs
-    eps = torch.finfo(torch.float32).eps
     probs = opacities[alive_indices].flatten()  # ensure its shape is [N,]
     sampled_idxs = _multinomial_sample(probs, n, replacement=True)
     sampled_idxs = alive_indices[sampled_idxs]
@@ -289,8 +331,8 @@ def relocate(
         scales=torch.exp(params["scales"])[sampled_idxs],
         ratios=torch.bincount(sampled_idxs)[sampled_idxs] + 1,
         binoms=binoms,
+        min_opacity=min_opacity,
     )
-    new_opacities = torch.clamp(new_opacities, max=1.0 - eps, min=min_opacity)
 
     def param_fn(name: str, p: Tensor) -> Tensor:
         if name == "opacities":
@@ -310,6 +352,8 @@ def relocate(
     for k, v in state.items():
         if isinstance(v, torch.Tensor):
             v[sampled_idxs] = 0
+    if scene is not None:
+        scene.on_relocate(dead_indices, sampled_idxs)
 
 
 @torch.no_grad()
@@ -320,10 +364,10 @@ def sample_add(
     n: int,
     binoms: Tensor,
     min_opacity: float = 0.005,
+    scene: Scene | None = None,
 ):
     opacities = torch.sigmoid(params["opacities"])
 
-    eps = torch.finfo(torch.float32).eps
     probs = opacities.flatten()
     sampled_idxs = _multinomial_sample(probs, n, replacement=True)
     new_opacities, new_scales = compute_relocation(
@@ -331,8 +375,8 @@ def sample_add(
         scales=torch.exp(params["scales"])[sampled_idxs],
         ratios=torch.bincount(sampled_idxs)[sampled_idxs] + 1,
         binoms=binoms,
+        min_opacity=min_opacity,
     )
-    new_opacities = torch.clamp(new_opacities, max=1.0 - eps, min=min_opacity)
 
     def param_fn(name: str, p: Tensor) -> Tensor:
         if name == "opacities":
@@ -353,6 +397,66 @@ def sample_add(
         v_new = torch.zeros((len(sampled_idxs), *v.shape[1:]), device=v.device)
         if isinstance(v, torch.Tensor):
             state[k] = torch.cat((v, v_new))
+    if scene is not None:
+        scene.on_sample_add(sampled_idxs)
+
+
+@torch.no_grad()
+def _cuda_fused_mcmc_perturb(
+    positions: Tensor,
+    quats: Tensor,
+    scales: Tensor,
+    opacities: Tensor,
+    noise_scale: float | None = None,
+    *,
+    scaler: float | None = None,
+    t: float = DEFAULT_MCMC_OPACITY_T,
+    k: float = DEFAULT_MCMC_OPACITY_K,
+) -> bool:
+    """Try the fused CUDA kernel for MCMC perturbation; return False if not applicable.
+
+    positions must be contiguous (mutated in-place); other tensors are made contiguous
+    via .contiguous() since the kernel only reads them. See
+    gsplat/cuda/csrc/MCMCPerturbCUDA.cu for the kernel.
+    """
+    try:
+        from gsplat.cuda._backend import _C
+    except ImportError:
+        _C = None  # type: ignore[assignment]
+    if _C is None or not positions.is_cuda:
+        return False
+    # positions is modified in-place — cannot .contiguous()-copy;
+    # fall back to PyTorch if non-contiguous.
+    if not positions.is_contiguous():
+        return False
+    # All inputs must be float32 CUDA tensors
+    for tensor in (positions, quats, scales, opacities):
+        if tensor.dtype != torch.float32 or not tensor.is_cuda:
+            return False
+    try:
+        resolved_noise_scale = _resolve_noise_scale(noise_scale, scaler)
+        noise = torch.randn_like(positions)
+        torch.ops.gsplat.mcmc_perturb_positions(
+            positions,
+            quats.contiguous(),
+            scales.contiguous(),
+            opacities.flatten().contiguous(),
+            noise,
+            resolved_noise_scale,
+            float(t),
+            float(k),
+        )
+        return True
+    except AttributeError:
+        return False
+    except RuntimeError as e:
+        import warnings
+
+        warnings.warn(
+            f"CUDA fused MCMC perturb failed, falling back to PyTorch: {e}",
+            stacklevel=2,
+        )
+        return False
 
 
 @torch.no_grad()
@@ -360,8 +464,34 @@ def inject_noise_to_position(
     params: Union[Dict[str, torch.nn.Parameter], torch.nn.ParameterDict],
     optimizers: Dict[str, torch.optim.Optimizer],
     state: Dict[str, Tensor],
-    scaler: float,
+    noise_scale: float | None = None,
+    *,
+    scaler: float | None = None,
+    t: float = DEFAULT_MCMC_OPACITY_T,
+    k: float = DEFAULT_MCMC_OPACITY_K,
 ):
+    """Add covariance- and opacity-weighted Gaussian noise to ``params["means"]`` in-place.
+
+    Prefers a fused CUDA kernel when available, with a pure-PyTorch fallback. The
+    backend can be overridden with the ``GSPLAT_MCMC_BACKEND`` env var:
+      * ``cuda`` / ``native`` / unset (default) — prefer the fused CUDA kernel.
+      * ``torch`` / ``pytorch`` / ``py`` — force the PyTorch fallback.
+    """
+    resolved_noise_scale = _resolve_noise_scale(noise_scale, scaler)
+    if not _force_torch_backend:
+        # Priority 1: native CUDA (single kernel launch)
+        if _cuda_fused_mcmc_perturb(
+            positions=params["means"],
+            quats=params["quats"],
+            scales=params["scales"],
+            opacities=params["opacities"],
+            noise_scale=resolved_noise_scale,
+            t=t,
+            k=k,
+        ):
+            return
+
+    # Priority 2: PyTorch fallback
     opacities = torch.sigmoid(params["opacities"].flatten())
     scales = torch.exp(params["scales"])
     covars, _ = quat_scale_to_covar_preci(
@@ -372,13 +502,10 @@ def inject_noise_to_position(
         triu=False,
     )
 
-    def op_sigmoid(x, k=100, x0=0.995):
-        return 1 / (1 + torch.exp(-k * (x - x0)))
-
     noise = (
         torch.randn_like(params["means"])
-        * (op_sigmoid(1 - opacities)).unsqueeze(-1)
-        * scaler
+        * torch.sigmoid(-float(k) * (opacities - float(t))).unsqueeze(-1)
+        * resolved_noise_scale
     )
     noise = torch.einsum("bij,bj->bi", covars, noise)
     params["means"].add_(noise)

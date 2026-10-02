@@ -339,7 +339,7 @@ def _fully_fused_projection_with_ut(
 
     .. note::
         Currently supports:
-        - Pinhole camera model
+        - Camera models: "pinhole", "ortho", "fisheye", "ftheta", "lidar"
         - Radial distortion
         - Rolling shutter
 
@@ -357,7 +357,7 @@ def _fully_fused_projection_with_ut(
         far_plane: Far plane distance
         radius_clip: Gaussians with projected radii smaller than this are culled
         calc_compensations: If True, compute opacity compensation
-        camera_model: Camera model ("pinhole", "fisheye", "ftheta" - ortho not supported in UT)
+        camera_model: Camera model ("pinhole", "ortho", "fisheye", "ftheta", "lidar")
         ut_params: Unscented Transform parameters
         radial_coeffs: [..., C, 4] or [..., C, 6] radial distortion coefficients (pinhole/fisheye)
         tangential_coeffs: [..., C, 2] tangential distortion coefficients (pinhole only)
@@ -399,11 +399,10 @@ def _fully_fused_projection_with_ut(
     assert Ks.dtype == torch.float32, f"Ks must be float32, got {Ks.dtype}"
 
     # Validate camera model support
-    if camera_model not in ["pinhole", "fisheye", "ftheta", "lidar"]:
+    if camera_model not in ["pinhole", "ortho", "fisheye", "ftheta", "lidar"]:
         raise ValueError(
             f"Camera model '{camera_model}' not supported in UT projection. "
-            f"UT supports: pinhole, fisheye, ftheta. "
-            f"For ortho, use non-UT projection (with_ut=False)."
+            f"UT supports: pinhole, ortho, fisheye, ftheta, lidar."
         )
 
     # Extract focal lengths and principal points from K matrix
@@ -427,7 +426,7 @@ def _fully_fused_projection_with_ut(
             height=height,
             camera_model=camera_model,
             principal_points=principal_points,
-            focal_lengths=focal_lengths,
+            focal_lengths=None if camera_model == "ftheta" else focal_lengths,
             radial_coeffs=radial_coeffs,
             tangential_coeffs=tangential_coeffs,
             thin_prism_coeffs=thin_prism_coeffs,
@@ -463,10 +462,20 @@ def _fully_fused_projection_with_ut(
         + t_cam[..., None, :]
     )  # [B, C, N, 3]
 
-    # Check if Gaussian center is within frustum.
-    # Use transformed center point (means_cam) for depth check
+    # Near/far cull depth is signed camera-space z unless Euclidean depth
+    # sorting is requested. In that mode LiDAR and FTheta use radial depth
+    # because their model classes accept rays with z <= 0; every other model
+    # retains signed z because its projection rejects those rays. This is a
+    # per-model rule: an FTheta calibration with max_angle <= pi/2 still takes
+    # the radial branch even though it images nothing behind the plane.
+    # Keeping forward-only models on signed z also prevents a behind-camera
+    # center from surviving through a few valid UT sigma points.
     center_z = means_cam[..., 2]  # [B, C, N]
-    in_frustum = (center_z >= near_plane) & (center_z <= far_plane)
+    use_radial_culling = not global_z_order and (
+        camera_model == "lidar" or camera_model == "ftheta"
+    )
+    cull_depth = means_cam.norm(dim=-1) if use_radial_culling else center_z
+    in_frustum = (cull_depth >= near_plane) & (cull_depth <= far_plane)
 
     # Cull degenerate Gaussians: zero-length quaternion (no defined orientation)
     # or near-zero scale on any axis (divergent precision matrix in rasterization).
@@ -516,12 +525,12 @@ def _fully_fused_projection_with_ut(
     # Compute conics (inverse of 2D covariance)
     # This is more robust than manual formula, especially for non-symmetric matrices
     # (numerical errors in weighted sum can break exact symmetry)
-    # Add a small epsilon to the diagonal to prevent torch.linalg.inv from
+    # Add a small epsilon to the diagonal to prevent torch.linalg.inv_ex from
     # producing NaN on singular matrices (invalid Gaussians are masked out
-    # by valid_gaussian anyway, but autograd still propagates through inv).
-    cov_2d_inv = torch.linalg.inv(
+    # by valid_gaussian anyway, but autograd still propagates through the inverse).
+    cov_2d_inv = torch.linalg.inv_ex(
         cov_2d + 1e-6 * torch.eye(2, dtype=cov_2d.dtype, device=cov_2d.device)
-    )  # [B, C, N, 2, 2]
+    ).inverse  # [B, C, N, 2, 2]
 
     # Apply opacity-based culling
     # Reference: https://arxiv.org/pdf/2402.00525 Section B.2

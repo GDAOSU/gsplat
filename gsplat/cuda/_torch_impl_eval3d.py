@@ -43,7 +43,6 @@ from ._wrapper import RollingShutterType
 from ._constants import (
     ALPHA_THRESHOLD,
     TRANSMITTANCE_THRESHOLD,
-    MAX_KERNEL_DENSITY_CUTOFF,
 )
 
 
@@ -203,12 +202,21 @@ def _compute_ray_gaussian_distance(
     # Safe normalization
     grd = _safe_normalize(grd)  # [..., 3]
 
+    # hit_t < 0: closest approach behind camera — mask grayDist to +inf
+    # so downstream exp(-0.5*inf) = 0 and alpha falls below ALPHA_THRESHOLD.
+    hit_t = torch.sum(grd * (-gro), dim=-1)  # [...] — hoisted: shared with hitDist
+    behind = hit_t < 0.0
+
     # Compute distance via cross product
     gcrod = torch.linalg.cross(grd, gro)  # [..., 3]
     grayDist = torch.sum(gcrod * gcrod, dim=-1)  # [...]
+    # torch.full_like produces a detached constant (no autograd node), so the
+    # 0*inf=NaN footgun (pytorch/pytorch#68425) does not apply here.
+    grayDist = torch.where(behind, torch.full_like(grayDist, float("inf")), grayDist)
 
-    # Compute hit distance (matches CUDA: hit_t = dot(grd, -gro), grds = scale * grd * hit_t)
-    hit_t = torch.sum(grd * (-gro), dim=-1)  # [...]
+    # Compute hit distance (reuse hit_t; grds = scale * grd * hit_t).
+    # For behind-camera entries (hit_t < 0) hitDist is computed but never
+    # accumulated — grayDist=inf drives alpha to 0, gating the accumulation.
     grds = scale * (grd * hit_t[..., None])  # [..., 3]
     hitDist = torch.linalg.vector_norm(grds, dim=-1)  # [...]
 
@@ -264,7 +272,7 @@ def accumulate_eval3d(
     image_ids: Tensor,  # [M]
     image_width: int,
     image_height: int,
-    flatten_idx: Tensor,  # [M] - index in original flatten_ids
+    flatten_idx: Tensor,  # [M] - offset within each sample's tile range
     rays: Tensor,  # [I, P, 6]
     base_transmittance: Optional[
         Tensor
@@ -292,7 +300,7 @@ def accumulate_eval3d(
         image_ids: Image indices for intersections. [M]
         image_width: Image width.
         image_height: Image height.
-        flatten_idx: Index in original flatten_ids [M]
+        flatten_idx: Offset within each sample's tile range in flatten_ids [M]
         rays: Pre-computed rays (origin + direction). [I, P, 6]
         base_transmittance: Optional base transmittance for batched accumulation.
                            Shape: [I, image_height, image_width]. If provided,
@@ -301,7 +309,7 @@ def accumulate_eval3d(
     Returns:
         - **renders**: Accumulated colors. [..., image_height, image_width, channels]
         - **alphas**: Accumulated opacities. [..., image_height, image_width, 1]
-        - **last_ids**: Last flatten_idx per pixel. [..., image_height, image_width]
+        - **last_ids**: Last tile-local flatten_ids offset per pixel. [..., image_height, image_width]
         - **sample_counts**: Number of samples per pixel. [..., image_height, image_width]
         - **normals**: Accumulated normals if return_normals=True, else None. [..., image_height, image_width, 3]
     """
@@ -386,9 +394,7 @@ def accumulate_eval3d(
 
     # 9. Filter out low-contribution Gaussians (explicit masking)
     # CUDA: if (alpha < 1.f / 255.f) continue;
-    valid_mask = (alphas >= ALPHA_THRESHOLD) & (
-        max_response > MAX_KERNEL_DENSITY_CUTOFF
-    )
+    valid_mask = alphas >= ALPHA_THRESHOLD
 
     # Apply filter to all arrays early to reduce memory usage
     alphas = alphas[valid_mask]
@@ -453,9 +459,10 @@ def accumulate_eval3d(
     else:
         normals = None
 
-    # Compute last flatten_idx per pixel (vectorized using packed_info)
-    # CUDA stores: last_ids[pix_id] = cur_idx (index in flatten_ids)
-    # PyTorch stores: last_ids[ray_id] = flatten_idx (same indexing as CUDA)
+    # Compute the last tile-local flatten_ids offset per pixel (vectorized
+    # using packed_info). CUDA keeps this metadata tile-local so it remains
+    # representable as int32 when the global intersection array exceeds 2^31
+    # entries; mirror that contract here.
 
     # Create packed_info from final filtered indices
     from nerfacc import pack_info
@@ -545,8 +552,8 @@ def _rasterize_to_pixels_eval3d(
         batch_per_iter: Batch size for iterative processing
         viewmats_rs: Optional end pose for rolling shutter [..., C, 4, 4]
         rs_type: Rolling shutter type
-        return_last_ids: If True, return the index of the last Gaussian contributing
-            to each pixel. Default: False.
+        return_last_ids: If True, return the tile-local ``flatten_ids`` offset
+            of the last Gaussian contributing to each pixel. Default: False.
         return_sample_counts: If True, return the number of samples (Gaussians)
             evaluated per pixel. Default: False.
         return_normals: If True, compute and return accumulated normals per pixel.
@@ -750,10 +757,12 @@ def _rasterize_to_pixels_eval3d(
                         )
                     num_pixels = len(pix_ids_in_tile)
 
-                    # Create flatten_ids indices for this batch
+                    # Create tile-local flatten_ids offsets for this batch.
+                    # CUDA last_ids is intentionally tile-local so its int32
+                    # metadata remains valid with int64 global offsets.
                     batch_flatten_indices = torch.arange(
-                        start_idx + local_start,
-                        start_idx + local_end,
+                        local_start,
+                        local_end,
                         device=device,
                         dtype=torch.long,
                     )

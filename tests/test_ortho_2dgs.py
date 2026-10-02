@@ -7,6 +7,44 @@ from typing_extensions import Tuple
 device = torch.device("cuda:0")
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="No CUDA device")
+@pytest.mark.parametrize("packed", [False, True])
+@pytest.mark.parametrize("viewmat_grad", [False, True])
+def test_ortho_2dgs_sh_preserves_affine_camera_directions(packed, viewmat_grad):
+    from gsplat.cuda._torch_impl import _spherical_harmonics
+    from gsplat.rendering import rasterization_2dgs
+
+    generator = torch.Generator(device=device).manual_seed(94)
+    means = (torch.randn(32, 3, generator=generator, device=device) * 0.2).requires_grad_()
+    quats = torch.randn(32, 4, generator=generator, device=device).requires_grad_()
+    scales = torch.full((32, 3), 0.04, device=device, requires_grad=True)
+    opacities = torch.full((32,), 0.3, device=device, requires_grad=True)
+    coefficients = (torch.randn(32, 4, 3, generator=generator, device=device) * 0.1).requires_grad_()
+    viewmats = torch.eye(4, device=device).repeat(2, 1, 1)
+    viewmats[:, 0, 0] = 1.4
+    viewmats[:, 0, 1] = 0.3
+    viewmats[:, 2, 3] = 3.0
+    viewmats.requires_grad_(viewmat_grad)
+    intrinsics = torch.tensor([[40.0, 0.0, 32.0], [0.0, 40.0, 24.0], [0.0, 0.0, 1.0]], device=device).repeat(2, 1, 1)
+    directions = means[None, :, :] - torch.linalg.inv(viewmats)[:, None, :3, 3]
+    reference_colors = (_spherical_harmonics(1, directions, coefficients) + 0.5).clamp_min(0)
+    common = dict(
+        means=means, quats=quats, scales=scales, opacities=opacities,
+        viewmats=viewmats, Ks=intrinsics, width=64, height=48, packed=packed, camera_model="ortho",
+    )
+    actual = rasterization_2dgs(**common, colors=coefficients, sh_degree=1)
+    expected = rasterization_2dgs(**common, colors=reference_colors)
+    for output, reference in zip(actual[:2], expected[:2]):
+        torch.testing.assert_close(output, reference, rtol=3e-4, atol=3e-5)
+    parameters = tuple(
+        tensor for tensor in (means, quats, scales, opacities, viewmats, coefficients) if tensor.requires_grad
+    )
+    actual_grads = torch.autograd.grad(actual[0].square().sum(), parameters)
+    expected_grads = torch.autograd.grad(expected[0].square().sum(), parameters)
+    for grad, reference in zip(actual_grads, expected_grads):
+        torch.testing.assert_close(grad, reference, rtol=2e-3, atol=2e-3)
+
+
 def expand(data: dict, batch_dims: Tuple[int, ...]):
     # append multiple batch dimensions to the front of the tensor
     # eg. x.shape = [N, 3], batch_dims = (1, 2), return shape is [1, 2, N, 3]

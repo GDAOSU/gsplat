@@ -16,7 +16,7 @@ template <uint32_t CDIM, typename scalar_t>
 __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
     const uint32_t I,        // number of images
     const uint32_t N,        // number of gaussians
-    const uint32_t n_isects, // number of ray-primitive intersections.
+    const int64_t n_isects, // number of ray-primitive intersections.
     const bool packed,       // whether the input tensors are packed
     // fwd inputs
     const vec2
@@ -47,7 +47,7 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
     const uint32_t tile_size,
     const uint32_t tile_width,
     const uint32_t tile_height,
-    const int32_t *__restrict__ tile_offsets, // [..., tile_height, tile_width]
+    const int64_t *__restrict__ tile_offsets, // [..., tile_height, tile_width]
     const int32_t *__restrict__ flatten_ids,  // [n_isects]
 
     // fwd outputs
@@ -141,8 +141,8 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
     // have all threads in tile process the same gaussians in batches
     // first collect gaussians between range.x and range.y in batches
     // which gaussians to look through in this tile
-    int32_t range_start = tile_offsets[tile_id];
-    int32_t range_end =
+    int64_t range_start = tile_offsets[tile_id];
+    int64_t range_end =
         (image_id == I - 1) && (tile_id == tile_width * tile_height - 1)
             ? n_isects
             : tile_offsets[tile_id + 1];
@@ -185,10 +185,10 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
     float buffer_normals[3] = {0.f};
 
     // index of last gaussian to contribute to this pixel
-    const int32_t bin_final = inside ? last_ids[pix_id] : 0;
+    const int64_t bin_final = inside ? last_ids[pix_id] : 0;
 
     // index of gaussian that contributes to median depth
-    const int32_t median_idx = inside ? median_ids[pix_id] : 0;
+    const int64_t median_idx = inside ? median_ids[pix_id] : 0;
 
     /**
      * ==============================
@@ -239,8 +239,8 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
     // find the maximum final gaussian ids in the thread warp.
     // this gives the last gaussian id that have intersected with any pixels in
     // the warp
-    const int32_t warp_bin_final =
-        cg::reduce(warp, bin_final, cg::greater<int>());
+    const int64_t warp_bin_final =
+        cg::reduce(warp, bin_final, cg::greater<int64_t>());
 
     /**
      * =======================================================
@@ -260,15 +260,15 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
 
         // loop factors:
         // we start with loop end and interate backwards
-        const int32_t batch_end = range_end - 1 - block_size * b;
-        const int32_t batch_size = min(block_size, batch_end + 1 - range_start);
+        const int64_t batch_end = range_end - 1 - block_size * b;
+        const int32_t batch_size = min(static_cast<int64_t>(block_size), batch_end + 1 - range_start);
 
         // VERY IMPORTANT HERE!
         // we are looping from back to front
         // so we are processing the gaussians in the order of closest to
         // furthest if you use symbolic solver on splatting rendering equations
         // you will see
-        const int32_t idx = batch_end - tr;
+        const int64_t idx = batch_end - tr;
 
         /*
          * Fetch Gaussian Primitives and STORE THEM IN REVERSE ORDER
@@ -313,7 +313,7 @@ __global__ void rasterize_to_pixels_ortho_2dgs_bwd_kernel(
          * BACKWARD LOOPING THROUGH PRIMITIVES
          * ==================================================
          */
-        for (uint32_t t = max(0, batch_end - warp_bin_final); t < batch_size;
+        for (uint32_t t = max(int64_t(0), batch_end - warp_bin_final); t < batch_size;
              ++t) {
 
             bool valid = inside;
@@ -707,7 +707,7 @@ void launch_rasterize_to_pixels_ortho_2dgs_bwd_kernel(
     uint32_t I = render_alphas.numel() / (image_height * image_width); // number of images
     uint32_t tile_height = tile_offsets.size(-2);
     uint32_t tile_width = tile_offsets.size(-1);
-    uint32_t n_isects = flatten_ids.size(0);
+    int64_t n_isects = flatten_ids.size(0);
 
     // Each block covers a tile on the image. In total there are
     // I * tile_height * tile_width blocks.
@@ -758,7 +758,7 @@ void launch_rasterize_to_pixels_ortho_2dgs_bwd_kernel(
             tile_size,
             tile_width,
             tile_height,
-            tile_offsets.data_ptr<int32_t>(),
+            tile_offsets.data_ptr<int64_t>(),
             flatten_ids.data_ptr<int32_t>(),
             render_colors.data_ptr<float>(),
             render_alphas.data_ptr<float>(),
