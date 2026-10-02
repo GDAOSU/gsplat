@@ -35,7 +35,7 @@ namespace gsplat
 {
 namespace cg = cooperative_groups;
 
-template<typename scalar_t>
+template<typename scalar_t, bool WithSkew>
 __global__ void projection_ewa_3dgs_packed_fwd_kernel(
     const uint32_t B,
     const uint32_t C,
@@ -147,17 +147,26 @@ __global__ void projection_ewa_3dgs_packed_fwd_kernel(
         covarW2C(R, covar, covar_c);
 
         Ks += bid * C * 9 + cid * 9;
-        switch(camera_model)
+        if constexpr(WithSkew)
         {
-        case CameraModelType::PINHOLE: // perspective projection
-            persp_proj(mean_c, covar_c, Ks[0], Ks[4], Ks[2], Ks[5], image_width, image_height, covar2d, mean2d);
-            break;
-        case CameraModelType::ORTHO: // orthographic projection
-            ortho_proj(mean_c, covar_c, Ks[0], Ks[4], Ks[2], Ks[5], image_width, image_height, covar2d, mean2d);
-            break;
-        case CameraModelType::FISHEYE: // fisheye projection
-            fisheye_proj(mean_c, covar_c, Ks[0], Ks[4], Ks[2], Ks[5], image_width, image_height, covar2d, mean2d);
-            break;
+            persp_skew_proj(
+                mean_c, covar_c, Ks[0], Ks[4], Ks[2], Ks[5], Ks[1], image_width, image_height, covar2d, mean2d
+            );
+        }
+        else
+        {
+            switch(camera_model)
+            {
+            case CameraModelType::PINHOLE: // perspective projection
+                persp_proj(mean_c, covar_c, Ks[0], Ks[4], Ks[2], Ks[5], image_width, image_height, covar2d, mean2d);
+                break;
+            case CameraModelType::ORTHO: // orthographic projection
+                ortho_proj(mean_c, covar_c, Ks[0], Ks[4], Ks[2], Ks[5], image_width, image_height, covar2d, mean2d);
+                break;
+            case CameraModelType::FISHEYE: // fisheye projection
+                fisheye_proj(mean_c, covar_c, Ks[0], Ks[4], Ks[2], Ks[5], image_width, image_height, covar2d, mean2d);
+                break;
+            }
         }
 
         det = add_blur(eps2d, covar2d, compensation);
@@ -346,42 +355,79 @@ void launch_projection_ewa_3dgs_packed_fwd_kernel(
         "projection_ewa_3dgs_packed_fwd_kernel",
         [&]()
         {
-            projection_ewa_3dgs_packed_fwd_kernel<scalar_t>
-                <<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
-                    B,
-                    C,
-                    N,
-                    means.const_data_ptr<scalar_t>(),
-                    covars.has_value() ? covars.value().const_data_ptr<scalar_t>() : nullptr,
-                    quats.has_value() ? quats.value().const_data_ptr<scalar_t>() : nullptr,
-                    scales.has_value() ? scales.value().const_data_ptr<scalar_t>() : nullptr,
-                    opacities.has_value() ? opacities.value().const_data_ptr<scalar_t>() : nullptr,
-                    viewmats.const_data_ptr<scalar_t>(),
-                    Ks.const_data_ptr<scalar_t>(),
-                    image_width,
-                    image_height,
-                    eps2d,
-                    near_plane,
-                    far_plane,
-                    radius_clip,
-                    block_accum.has_value() ? block_accum.value().const_data_ptr<int32_t>() : nullptr,
-                    camera_model,
-                    block_cnts.has_value() ? block_cnts.value().data_ptr<int32_t>() : nullptr,
-                    indptr.has_value() ? indptr.value().data_ptr<int32_t>() : nullptr,
-                    batch_ids.has_value() ? batch_ids.value().data_ptr<int64_t>() : nullptr,
-                    camera_ids.has_value() ? camera_ids.value().data_ptr<int64_t>() : nullptr,
-                    gaussian_ids.has_value() ? gaussian_ids.value().data_ptr<int64_t>() : nullptr,
-                    radii.has_value() ? radii.value().data_ptr<int32_t>() : nullptr,
-                    means2d.has_value() ? means2d.value().data_ptr<scalar_t>() : nullptr,
-                    depths.has_value() ? depths.value().data_ptr<scalar_t>() : nullptr,
-                    conics.has_value() ? conics.value().data_ptr<scalar_t>() : nullptr,
-                    compensations.has_value() ? compensations.value().data_ptr<scalar_t>() : nullptr
-                );
+            if(camera_model == CameraModelType::PINHOLE_SKEW)
+            {
+                projection_ewa_3dgs_packed_fwd_kernel<scalar_t, true>
+                    <<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
+                        B,
+                        C,
+                        N,
+                        means.const_data_ptr<scalar_t>(),
+                        covars.has_value() ? covars.value().const_data_ptr<scalar_t>() : nullptr,
+                        quats.has_value() ? quats.value().const_data_ptr<scalar_t>() : nullptr,
+                        scales.has_value() ? scales.value().const_data_ptr<scalar_t>() : nullptr,
+                        opacities.has_value() ? opacities.value().const_data_ptr<scalar_t>() : nullptr,
+                        viewmats.const_data_ptr<scalar_t>(),
+                        Ks.const_data_ptr<scalar_t>(),
+                        image_width,
+                        image_height,
+                        eps2d,
+                        near_plane,
+                        far_plane,
+                        radius_clip,
+                        block_accum.has_value() ? block_accum.value().const_data_ptr<int32_t>() : nullptr,
+                        camera_model,
+                        block_cnts.has_value() ? block_cnts.value().data_ptr<int32_t>() : nullptr,
+                        indptr.has_value() ? indptr.value().data_ptr<int32_t>() : nullptr,
+                        batch_ids.has_value() ? batch_ids.value().data_ptr<int64_t>() : nullptr,
+                        camera_ids.has_value() ? camera_ids.value().data_ptr<int64_t>() : nullptr,
+                        gaussian_ids.has_value() ? gaussian_ids.value().data_ptr<int64_t>() : nullptr,
+                        radii.has_value() ? radii.value().data_ptr<int32_t>() : nullptr,
+                        means2d.has_value() ? means2d.value().data_ptr<scalar_t>() : nullptr,
+                        depths.has_value() ? depths.value().data_ptr<scalar_t>() : nullptr,
+                        conics.has_value() ? conics.value().data_ptr<scalar_t>() : nullptr,
+                        compensations.has_value() ? compensations.value().data_ptr<scalar_t>() : nullptr
+                    );
+            }
+            else
+            {
+                projection_ewa_3dgs_packed_fwd_kernel<scalar_t, false>
+                    <<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
+                        B,
+                        C,
+                        N,
+                        means.const_data_ptr<scalar_t>(),
+                        covars.has_value() ? covars.value().const_data_ptr<scalar_t>() : nullptr,
+                        quats.has_value() ? quats.value().const_data_ptr<scalar_t>() : nullptr,
+                        scales.has_value() ? scales.value().const_data_ptr<scalar_t>() : nullptr,
+                        opacities.has_value() ? opacities.value().const_data_ptr<scalar_t>() : nullptr,
+                        viewmats.const_data_ptr<scalar_t>(),
+                        Ks.const_data_ptr<scalar_t>(),
+                        image_width,
+                        image_height,
+                        eps2d,
+                        near_plane,
+                        far_plane,
+                        radius_clip,
+                        block_accum.has_value() ? block_accum.value().const_data_ptr<int32_t>() : nullptr,
+                        camera_model,
+                        block_cnts.has_value() ? block_cnts.value().data_ptr<int32_t>() : nullptr,
+                        indptr.has_value() ? indptr.value().data_ptr<int32_t>() : nullptr,
+                        batch_ids.has_value() ? batch_ids.value().data_ptr<int64_t>() : nullptr,
+                        camera_ids.has_value() ? camera_ids.value().data_ptr<int64_t>() : nullptr,
+                        gaussian_ids.has_value() ? gaussian_ids.value().data_ptr<int64_t>() : nullptr,
+                        radii.has_value() ? radii.value().data_ptr<int32_t>() : nullptr,
+                        means2d.has_value() ? means2d.value().data_ptr<scalar_t>() : nullptr,
+                        depths.has_value() ? depths.value().data_ptr<scalar_t>() : nullptr,
+                        conics.has_value() ? conics.value().data_ptr<scalar_t>() : nullptr,
+                        compensations.has_value() ? compensations.value().data_ptr<scalar_t>() : nullptr
+                    );
+            }
         }
     );
 }
 
-template<typename scalar_t>
+template<typename scalar_t, bool WithSkew>
 __global__ void projection_ewa_3dgs_packed_bwd_kernel(
     // fwd inputs
     const uint32_t B,
@@ -500,16 +546,16 @@ __global__ void projection_ewa_3dgs_packed_bwd_kernel(
     float fx = Ks[0], cx = Ks[2], fy = Ks[4], cy = Ks[5];
     mat3 v_covar_c(0.f);
     vec3 v_mean_c(0.f);
-    switch(camera_model)
+    if constexpr(WithSkew)
     {
-    case CameraModelType::PINHOLE: // perspective projection
-        persp_proj_vjp(
+        persp_skew_proj_vjp(
             mean_c,
             covar_c,
             fx,
             fy,
             cx,
             cy,
+            Ks[1],
             image_width,
             image_height,
             v_covar2d,
@@ -517,39 +563,60 @@ __global__ void projection_ewa_3dgs_packed_bwd_kernel(
             v_mean_c,
             v_covar_c
         );
-        break;
-    case CameraModelType::ORTHO: // orthographic projection
-        ortho_proj_vjp(
-            mean_c,
-            covar_c,
-            fx,
-            fy,
-            cx,
-            cy,
-            image_width,
-            image_height,
-            v_covar2d,
-            glm::make_vec2(v_means2d),
-            v_mean_c,
-            v_covar_c
-        );
-        break;
-    case CameraModelType::FISHEYE: // fisheye projection
-        fisheye_proj_vjp(
-            mean_c,
-            covar_c,
-            fx,
-            fy,
-            cx,
-            cy,
-            image_width,
-            image_height,
-            v_covar2d,
-            glm::make_vec2(v_means2d),
-            v_mean_c,
-            v_covar_c
-        );
-        break;
+    }
+    else
+    {
+        switch(camera_model)
+        {
+        case CameraModelType::PINHOLE: // perspective projection
+            persp_proj_vjp(
+                mean_c,
+                covar_c,
+                fx,
+                fy,
+                cx,
+                cy,
+                image_width,
+                image_height,
+                v_covar2d,
+                glm::make_vec2(v_means2d),
+                v_mean_c,
+                v_covar_c
+            );
+            break;
+        case CameraModelType::ORTHO: // orthographic projection
+            ortho_proj_vjp(
+                mean_c,
+                covar_c,
+                fx,
+                fy,
+                cx,
+                cy,
+                image_width,
+                image_height,
+                v_covar2d,
+                glm::make_vec2(v_means2d),
+                v_mean_c,
+                v_covar_c
+            );
+            break;
+        case CameraModelType::FISHEYE: // fisheye projection
+            fisheye_proj_vjp(
+                mean_c,
+                covar_c,
+                fx,
+                fy,
+                cx,
+                cy,
+                image_width,
+                image_height,
+                v_covar2d,
+                glm::make_vec2(v_means2d),
+                v_mean_c,
+                v_covar_c
+            );
+            break;
+        }
     }
 
     // add contribution from v_depths
@@ -735,38 +802,76 @@ void launch_projection_ewa_3dgs_packed_bwd_kernel(
         "projection_ewa_3dgs_packed_bwd_kernel",
         [&]()
         {
-            projection_ewa_3dgs_packed_bwd_kernel<scalar_t>
-                <<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
-                    B,
-                    C,
-                    N,
-                    nnz,
-                    means.const_data_ptr<scalar_t>(),
-                    covars.has_value() ? covars.value().const_data_ptr<scalar_t>() : nullptr,
-                    covars.has_value() ? nullptr : quats.value().const_data_ptr<scalar_t>(),
-                    covars.has_value() ? nullptr : scales.value().const_data_ptr<scalar_t>(),
-                    viewmats.const_data_ptr<scalar_t>(),
-                    Ks.const_data_ptr<scalar_t>(),
-                    image_width,
-                    image_height,
-                    eps2d,
-                    camera_model,
-                    batch_ids.const_data_ptr<int64_t>(),
-                    camera_ids.const_data_ptr<int64_t>(),
-                    gaussian_ids.const_data_ptr<int64_t>(),
-                    conics.const_data_ptr<scalar_t>(),
-                    compensations.has_value() ? compensations.value().const_data_ptr<scalar_t>() : nullptr,
-                    v_means2d.const_data_ptr<scalar_t>(),
-                    v_depths.const_data_ptr<scalar_t>(),
-                    v_conics.const_data_ptr<scalar_t>(),
-                    v_compensations.has_value() ? v_compensations.value().const_data_ptr<scalar_t>() : nullptr,
-                    sparse_grad,
-                    v_means.data_ptr<scalar_t>(),
-                    covars.has_value() ? v_covars.value().data_ptr<scalar_t>() : nullptr,
-                    covars.has_value() ? nullptr : v_quats.value().data_ptr<scalar_t>(),
-                    covars.has_value() ? nullptr : v_scales.value().data_ptr<scalar_t>(),
-                    v_viewmats.has_value() ? v_viewmats.value().data_ptr<scalar_t>() : nullptr
-                );
+            if(camera_model == CameraModelType::PINHOLE_SKEW)
+            {
+                projection_ewa_3dgs_packed_bwd_kernel<scalar_t, true>
+                    <<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
+                        B,
+                        C,
+                        N,
+                        nnz,
+                        means.const_data_ptr<scalar_t>(),
+                        covars.has_value() ? covars.value().const_data_ptr<scalar_t>() : nullptr,
+                        covars.has_value() ? nullptr : quats.value().const_data_ptr<scalar_t>(),
+                        covars.has_value() ? nullptr : scales.value().const_data_ptr<scalar_t>(),
+                        viewmats.const_data_ptr<scalar_t>(),
+                        Ks.const_data_ptr<scalar_t>(),
+                        image_width,
+                        image_height,
+                        eps2d,
+                        camera_model,
+                        batch_ids.const_data_ptr<int64_t>(),
+                        camera_ids.const_data_ptr<int64_t>(),
+                        gaussian_ids.const_data_ptr<int64_t>(),
+                        conics.const_data_ptr<scalar_t>(),
+                        compensations.has_value() ? compensations.value().const_data_ptr<scalar_t>() : nullptr,
+                        v_means2d.const_data_ptr<scalar_t>(),
+                        v_depths.const_data_ptr<scalar_t>(),
+                        v_conics.const_data_ptr<scalar_t>(),
+                        v_compensations.has_value() ? v_compensations.value().const_data_ptr<scalar_t>() : nullptr,
+                        sparse_grad,
+                        v_means.data_ptr<scalar_t>(),
+                        covars.has_value() ? v_covars.value().data_ptr<scalar_t>() : nullptr,
+                        covars.has_value() ? nullptr : v_quats.value().data_ptr<scalar_t>(),
+                        covars.has_value() ? nullptr : v_scales.value().data_ptr<scalar_t>(),
+                        v_viewmats.has_value() ? v_viewmats.value().data_ptr<scalar_t>() : nullptr
+                    );
+            }
+            else
+            {
+                projection_ewa_3dgs_packed_bwd_kernel<scalar_t, false>
+                    <<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
+                        B,
+                        C,
+                        N,
+                        nnz,
+                        means.const_data_ptr<scalar_t>(),
+                        covars.has_value() ? covars.value().const_data_ptr<scalar_t>() : nullptr,
+                        covars.has_value() ? nullptr : quats.value().const_data_ptr<scalar_t>(),
+                        covars.has_value() ? nullptr : scales.value().const_data_ptr<scalar_t>(),
+                        viewmats.const_data_ptr<scalar_t>(),
+                        Ks.const_data_ptr<scalar_t>(),
+                        image_width,
+                        image_height,
+                        eps2d,
+                        camera_model,
+                        batch_ids.const_data_ptr<int64_t>(),
+                        camera_ids.const_data_ptr<int64_t>(),
+                        gaussian_ids.const_data_ptr<int64_t>(),
+                        conics.const_data_ptr<scalar_t>(),
+                        compensations.has_value() ? compensations.value().const_data_ptr<scalar_t>() : nullptr,
+                        v_means2d.const_data_ptr<scalar_t>(),
+                        v_depths.const_data_ptr<scalar_t>(),
+                        v_conics.const_data_ptr<scalar_t>(),
+                        v_compensations.has_value() ? v_compensations.value().const_data_ptr<scalar_t>() : nullptr,
+                        sparse_grad,
+                        v_means.data_ptr<scalar_t>(),
+                        covars.has_value() ? v_covars.value().data_ptr<scalar_t>() : nullptr,
+                        covars.has_value() ? nullptr : v_quats.value().data_ptr<scalar_t>(),
+                        covars.has_value() ? nullptr : v_scales.value().data_ptr<scalar_t>(),
+                        v_viewmats.has_value() ? v_viewmats.value().data_ptr<scalar_t>() : nullptr
+                    );
+            }
         }
     );
 }

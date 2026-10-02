@@ -689,6 +689,36 @@ inline __device__ void persp_proj_vjp(
                 + 2.f * fy * ty * rz3 * v_J[2][1];
 }
 
+inline __device__ void persp_skew_proj(
+    const vec3 mean3d, const mat3 cov3d,
+    const float fx, const float fy, const float cx, const float cy,
+    const float skew, const uint32_t width, const uint32_t height,
+    mat2 &cov2d, vec2 &mean2d
+)
+{
+    const mat3 shear(1.f, 0.f, 0.f, skew / fx, 1.f, 0.f, 0.f, 0.f, 1.f);
+    persp_proj(shear * mean3d, shear * cov3d * glm::transpose(shear),
+               fx, fy, cx, cy, width, height, cov2d, mean2d);
+}
+
+inline __device__ void persp_skew_proj_vjp(
+    const vec3 mean3d, const mat3 cov3d,
+    const float fx, const float fy, const float cx, const float cy,
+    const float skew, const uint32_t width, const uint32_t height,
+    const mat2 v_cov2d, const vec2 v_mean2d,
+    vec3 &v_mean3d, mat3 &v_cov3d
+)
+{
+    const mat3 shear(1.f, 0.f, 0.f, skew / fx, 1.f, 0.f, 0.f, 0.f, 1.f);
+    vec3 v_sheared_mean(0.f);
+    mat3 v_sheared_covar(0.f);
+    persp_proj_vjp(shear * mean3d, shear * cov3d * glm::transpose(shear),
+                   fx, fy, cx, cy, width, height, v_cov2d, v_mean2d,
+                   v_sheared_mean, v_sheared_covar);
+    v_mean3d += glm::transpose(shear) * v_sheared_mean;
+    v_cov3d += glm::transpose(shear) * v_sheared_covar * shear;
+}
+
 inline __device__ void fisheye_proj(
     // inputs
     const vec3 mean3d,

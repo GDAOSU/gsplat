@@ -1333,7 +1333,8 @@ struct TorchArgDef<Projection2DGSFusedResult>
 
 using Projection2DGSFusedFwdResult = Projection2DGSFusedResult;
 
-Projection2DGSFusedFwdResult projection_2dgs_fused_fwd(
+template<bool WithSkew>
+Projection2DGSFusedFwdResult projection_2dgs_fused_fwd_impl(
     const at::Tensor &means,    // [..., N, 3]
     const at::Tensor &quats,    // [..., N, 4]
     const at::Tensor &scales,   // [..., N, 3]
@@ -1376,7 +1377,7 @@ Projection2DGSFusedFwdResult projection_2dgs_fused_fwd(
     normals_shape.append({C, N, 3});
     at::Tensor normals = at::zeros(normals_shape, opt);
 
-    launch_projection_2dgs_fused_fwd_kernel(
+    (WithSkew ? launch_skew_projection_2dgs_fused_fwd_kernel : launch_projection_2dgs_fused_fwd_kernel)(
         // inputs
         means,
         quats,
@@ -1402,6 +1403,44 @@ Projection2DGSFusedFwdResult projection_2dgs_fused_fwd(
         .ray_transforms = ray_transforms,
         .normals        = normals,
     };
+}
+
+Projection2DGSFusedFwdResult projection_2dgs_fused_fwd(
+    const at::Tensor &means,    // [..., N, 3]
+    const at::Tensor &quats,    // [..., N, 4]
+    const at::Tensor &scales,   // [..., N, 3]
+    const at::Tensor &viewmats, // [..., C, 4, 4]
+    const at::Tensor &Ks,       // [..., C, 3, 3]
+    int64_t image_width,
+    int64_t image_height,
+    double eps2d,
+    double near_plane,
+    double far_plane,
+    double radius_clip
+)
+{
+    return projection_2dgs_fused_fwd_impl<false>(
+        means, quats, scales, viewmats, Ks, image_width, image_height, eps2d, near_plane, far_plane, radius_clip
+    );
+}
+
+Projection2DGSFusedFwdResult skew_projection_2dgs_fused_fwd(
+    const at::Tensor &means,    // [..., N, 3]
+    const at::Tensor &quats,    // [..., N, 4]
+    const at::Tensor &scales,   // [..., N, 3]
+    const at::Tensor &viewmats, // [..., C, 4, 4]
+    const at::Tensor &Ks,       // [..., C, 3, 3]
+    int64_t image_width,
+    int64_t image_height,
+    double eps2d,
+    double near_plane,
+    double far_plane,
+    double radius_clip
+)
+{
+    return projection_2dgs_fused_fwd_impl<true>(
+        means, quats, scales, viewmats, Ks, image_width, image_height, eps2d, near_plane, far_plane, radius_clip
+    );
 }
 
 struct Projection2DGSFusedBwdResult
@@ -1451,11 +1490,12 @@ struct TorchArgDef<Projection2DGSFusedGrad>
     }
 };
 
+template<bool WithSkew>
 // Full backward for projection_2dgs_fused.
 // `viewmats_requires_grad` selects whether to compute the viewmats gradient. It
 // is an explicit argument rather than something inferred from a tensor's
 // requires_grad, so this functional op's behavior follows only from its inputs.
-Projection2DGSFusedBwdResult projection_2dgs_fused_bwd(
+Projection2DGSFusedBwdResult projection_2dgs_fused_bwd_impl(
     // fwd inputs
     const at::Tensor &means,    // [..., N, 3]
     const at::Tensor &quats,    // [..., N, 4]
@@ -1497,7 +1537,7 @@ Projection2DGSFusedBwdResult projection_2dgs_fused_bwd(
         v_viewmats = at::zeros_like(viewmats);
     }
 
-    launch_projection_2dgs_fused_bwd_kernel(
+    (WithSkew ? launch_skew_projection_2dgs_fused_bwd_kernel : launch_projection_2dgs_fused_bwd_kernel)(
         // inputs
         means,
         quats,
@@ -1528,6 +1568,76 @@ Projection2DGSFusedBwdResult projection_2dgs_fused_bwd(
     };
 }
 
+// Full backward for projection_2dgs_fused.
+// `viewmats_requires_grad` selects whether to compute the viewmats gradient. It
+// is an explicit argument rather than something inferred from a tensor's
+// requires_grad, so this functional op's behavior follows only from its inputs.
+Projection2DGSFusedBwdResult projection_2dgs_fused_bwd(
+    // fwd inputs
+    const at::Tensor &means,    // [..., N, 3]
+    const at::Tensor &quats,    // [..., N, 4]
+    const at::Tensor &scales,   // [..., N, 3]
+    const at::Tensor &viewmats, // [..., C, 4, 4]
+    const at::Tensor &Ks,       // [..., C, 3, 3]
+    int64_t image_width,
+    int64_t image_height,
+    // fwd outputs
+    const at::Tensor &radii,          // [..., C, N, 2]
+    const at::Tensor &ray_transforms, // [..., C, N, 3, 3]
+    const Projection2DGSFusedGrad &grad,
+    bool viewmats_requires_grad
+)
+{
+    return projection_2dgs_fused_bwd_impl<false>(
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        radii,
+        ray_transforms,
+        grad,
+        viewmats_requires_grad
+    );
+}
+
+// Full backward for projection_2dgs_fused.
+// `viewmats_requires_grad` selects whether to compute the viewmats gradient. It
+// is an explicit argument rather than something inferred from a tensor's
+// requires_grad, so this functional op's behavior follows only from its inputs.
+Projection2DGSFusedBwdResult skew_projection_2dgs_fused_bwd(
+    // fwd inputs
+    const at::Tensor &means,    // [..., N, 3]
+    const at::Tensor &quats,    // [..., N, 4]
+    const at::Tensor &scales,   // [..., N, 3]
+    const at::Tensor &viewmats, // [..., C, 4, 4]
+    const at::Tensor &Ks,       // [..., C, 3, 3]
+    int64_t image_width,
+    int64_t image_height,
+    // fwd outputs
+    const at::Tensor &radii,          // [..., C, N, 2]
+    const at::Tensor &ray_transforms, // [..., C, N, 3, 3]
+    const Projection2DGSFusedGrad &grad,
+    bool viewmats_requires_grad
+)
+{
+    return projection_2dgs_fused_bwd_impl<true>(
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        radii,
+        ray_transforms,
+        grad,
+        viewmats_requires_grad
+    );
+}
+
 Projection2DGSFusedFwdResult projection_2dgs_fused(
     const at::Tensor &means,
     const at::Tensor &quats,
@@ -1546,6 +1656,38 @@ Projection2DGSFusedFwdResult projection_2dgs_fused(
     // recorded and the result is differentiable.
     return call_torch_op<&projection_2dgs_fused_fwd>(
         "gsplat::projection_2dgs_fused",
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        eps2d,
+        near_plane,
+        far_plane,
+        radius_clip
+    );
+}
+
+Projection2DGSFusedFwdResult skew_projection_2dgs_fused(
+    const at::Tensor &means,
+    const at::Tensor &quats,
+    const at::Tensor &scales,
+    const at::Tensor &viewmats,
+    const at::Tensor &Ks,
+    int64_t image_width,
+    int64_t image_height,
+    double eps2d,
+    double near_plane,
+    double far_plane,
+    double radius_clip
+)
+{
+    // Invoke the op through the dispatcher so its registered autograd is
+    // recorded and the result is differentiable.
+    return call_torch_op<&skew_projection_2dgs_fused_fwd>(
+        "gsplat::skew_projection_2dgs_fused",
         means,
         quats,
         scales,
@@ -1597,7 +1739,8 @@ struct TorchArgDef<Projection2DGSPackedResult>
 
 using Projection2DGSPackedFwdResult = Projection2DGSPackedResult;
 
-Projection2DGSPackedFwdResult projection_2dgs_packed_fwd(
+template<bool WithSkew>
+Projection2DGSPackedFwdResult projection_2dgs_packed_fwd_impl(
     const at::Tensor &means,    // [..., N, 3]
     const at::Tensor &quats,    // [..., N, 4]
     const at::Tensor &scales,   // [..., N, 3]
@@ -1629,7 +1772,7 @@ Projection2DGSPackedFwdResult projection_2dgs_packed_fwd(
     if(B && C && N)
     {
         at::Tensor block_cnts = at::empty({nrows * blocks_per_row}, opt.dtype(at::kInt));
-        launch_projection_2dgs_packed_fwd_kernel(
+        (WithSkew ? launch_skew_projection_2dgs_packed_fwd_kernel : launch_projection_2dgs_packed_fwd_kernel)(
             // inputs
             means,
             quats,
@@ -1675,7 +1818,7 @@ Projection2DGSPackedFwdResult projection_2dgs_packed_fwd(
 
     if(nnz)
     {
-        launch_projection_2dgs_packed_fwd_kernel(
+        (WithSkew ? launch_skew_projection_2dgs_packed_fwd_kernel : launch_projection_2dgs_packed_fwd_kernel)(
             // inputs
             means,
             quats,
@@ -1717,6 +1860,44 @@ Projection2DGSPackedFwdResult projection_2dgs_packed_fwd(
         .ray_transforms = ray_transforms,
         .normals        = normals,
     };
+}
+
+Projection2DGSPackedFwdResult projection_2dgs_packed_fwd(
+    const at::Tensor &means,    // [..., N, 3]
+    const at::Tensor &quats,    // [..., N, 4]
+    const at::Tensor &scales,   // [..., N, 3]
+    const at::Tensor &viewmats, // [..., C, 4, 4]
+    const at::Tensor &Ks,       // [..., C, 3, 3]
+    int64_t image_width,
+    int64_t image_height,
+    double near_plane,
+    double far_plane,
+    double radius_clip,
+    bool sparse_grad
+)
+{
+    return projection_2dgs_packed_fwd_impl<false>(
+        means, quats, scales, viewmats, Ks, image_width, image_height, near_plane, far_plane, radius_clip, sparse_grad
+    );
+}
+
+Projection2DGSPackedFwdResult skew_projection_2dgs_packed_fwd(
+    const at::Tensor &means,    // [..., N, 3]
+    const at::Tensor &quats,    // [..., N, 4]
+    const at::Tensor &scales,   // [..., N, 3]
+    const at::Tensor &viewmats, // [..., C, 4, 4]
+    const at::Tensor &Ks,       // [..., C, 3, 3]
+    int64_t image_width,
+    int64_t image_height,
+    double near_plane,
+    double far_plane,
+    double radius_clip,
+    bool sparse_grad
+)
+{
+    return projection_2dgs_packed_fwd_impl<true>(
+        means, quats, scales, viewmats, Ks, image_width, image_height, near_plane, far_plane, radius_clip, sparse_grad
+    );
 }
 
 struct Projection2DGSPackedBwdResult
@@ -1766,11 +1947,12 @@ struct TorchArgDef<Projection2DGSPackedGrad>
     }
 };
 
+template<bool WithSkew>
 // Full backward for projection_2dgs_packed.
 // `viewmats_requires_grad` selects whether to compute the viewmats gradient. It
 // is an explicit argument rather than something inferred from a tensor's
 // requires_grad, so this functional op's behavior follows only from its inputs.
-Projection2DGSPackedBwdResult projection_2dgs_packed_bwd(
+Projection2DGSPackedBwdResult projection_2dgs_packed_bwd_impl(
     // fwd inputs
     const at::Tensor &means,    // [..., N, 3]
     const at::Tensor &quats,    // [..., N, 4]
@@ -1822,7 +2004,7 @@ Projection2DGSPackedBwdResult projection_2dgs_packed_bwd(
         v_viewmats = at::zeros_like(viewmats, opt);
     }
 
-    launch_projection_2dgs_packed_bwd_kernel(
+    (WithSkew ? launch_skew_projection_2dgs_packed_bwd_kernel : launch_projection_2dgs_packed_bwd_kernel)(
         // fwd inputs
         means,
         quats,
@@ -1870,6 +2052,90 @@ Projection2DGSPackedBwdResult projection_2dgs_packed_bwd(
     };
 }
 
+// Full backward for projection_2dgs_packed.
+// `viewmats_requires_grad` selects whether to compute the viewmats gradient. It
+// is an explicit argument rather than something inferred from a tensor's
+// requires_grad, so this functional op's behavior follows only from its inputs.
+Projection2DGSPackedBwdResult projection_2dgs_packed_bwd(
+    // fwd inputs
+    const at::Tensor &means,    // [..., N, 3]
+    const at::Tensor &quats,    // [..., N, 4]
+    const at::Tensor &scales,   // [..., N, 3]
+    const at::Tensor &viewmats, // [..., C, 4, 4]
+    const at::Tensor &Ks,       // [..., C, 3, 3]
+    int64_t image_width,
+    int64_t image_height,
+    bool sparse_grad,
+    // fwd outputs
+    const at::Tensor &batch_ids,      // [nnz]
+    const at::Tensor &camera_ids,     // [nnz]
+    const at::Tensor &gaussian_ids,   // [nnz]
+    const at::Tensor &ray_transforms, // [nnz, 3, 3]
+    // grad outputs
+    const Projection2DGSPackedGrad &grad,
+    bool viewmats_requires_grad
+)
+{
+    return projection_2dgs_packed_bwd_impl<false>(
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        sparse_grad,
+        batch_ids,
+        camera_ids,
+        gaussian_ids,
+        ray_transforms,
+        grad,
+        viewmats_requires_grad
+    );
+}
+
+// Full backward for projection_2dgs_packed.
+// `viewmats_requires_grad` selects whether to compute the viewmats gradient. It
+// is an explicit argument rather than something inferred from a tensor's
+// requires_grad, so this functional op's behavior follows only from its inputs.
+Projection2DGSPackedBwdResult skew_projection_2dgs_packed_bwd(
+    // fwd inputs
+    const at::Tensor &means,    // [..., N, 3]
+    const at::Tensor &quats,    // [..., N, 4]
+    const at::Tensor &scales,   // [..., N, 3]
+    const at::Tensor &viewmats, // [..., C, 4, 4]
+    const at::Tensor &Ks,       // [..., C, 3, 3]
+    int64_t image_width,
+    int64_t image_height,
+    bool sparse_grad,
+    // fwd outputs
+    const at::Tensor &batch_ids,      // [nnz]
+    const at::Tensor &camera_ids,     // [nnz]
+    const at::Tensor &gaussian_ids,   // [nnz]
+    const at::Tensor &ray_transforms, // [nnz, 3, 3]
+    // grad outputs
+    const Projection2DGSPackedGrad &grad,
+    bool viewmats_requires_grad
+)
+{
+    return projection_2dgs_packed_bwd_impl<true>(
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        sparse_grad,
+        batch_ids,
+        camera_ids,
+        gaussian_ids,
+        ray_transforms,
+        grad,
+        viewmats_requires_grad
+    );
+}
+
 Projection2DGSPackedResult projection_2dgs_packed(
     const at::Tensor &means,
     const at::Tensor &quats,
@@ -1888,6 +2154,38 @@ Projection2DGSPackedResult projection_2dgs_packed(
     // recorded and the result is differentiable.
     return call_torch_op<&projection_2dgs_packed_fwd>(
         "gsplat::projection_2dgs_packed",
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        near_plane,
+        far_plane,
+        radius_clip,
+        sparse_grad
+    );
+}
+
+Projection2DGSPackedResult skew_projection_2dgs_packed(
+    const at::Tensor &means,
+    const at::Tensor &quats,
+    const at::Tensor &scales,
+    const at::Tensor &viewmats,
+    const at::Tensor &Ks,
+    int64_t image_width,
+    int64_t image_height,
+    double near_plane,
+    double far_plane,
+    double radius_clip,
+    bool sparse_grad
+)
+{
+    // Invoke the op through the dispatcher so its registered autograd is
+    // recorded and the result is differentiable.
+    return call_torch_op<&skew_projection_2dgs_packed_fwd>(
+        "gsplat::skew_projection_2dgs_packed",
         means,
         quats,
         scales,
@@ -2202,9 +2500,13 @@ void register_projection_cuda_impl(torch::Library &m)
 
 #if GSPLAT_BUILD_2DGS
     m.impl("projection_2dgs_fused", to_torch_op<&projection_2dgs_fused_fwd>);
+    m.impl("skew_projection_2dgs_fused", to_torch_op<&skew_projection_2dgs_fused_fwd>);
     m.impl("projection_2dgs_fused_bwd", to_torch_op<&projection_2dgs_fused_bwd>);
+    m.impl("skew_projection_2dgs_fused_bwd", to_torch_op<&skew_projection_2dgs_fused_bwd>);
     m.impl("projection_2dgs_packed", to_torch_op<&projection_2dgs_packed_fwd>);
+    m.impl("skew_projection_2dgs_packed", to_torch_op<&skew_projection_2dgs_packed_fwd>);
     m.impl("projection_2dgs_packed_bwd", to_torch_op<&projection_2dgs_packed_bwd>);
+    m.impl("skew_projection_2dgs_packed_bwd", to_torch_op<&skew_projection_2dgs_packed_bwd>);
 #endif
 
     m.impl("projection_ut_3dgs_fused", to_torch_op<&projection_ut_3dgs_fused>);

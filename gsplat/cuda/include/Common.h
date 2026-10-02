@@ -67,6 +67,7 @@ using vec4   = glm::vec<4, float>;
 using mat2   = glm::mat<2, 2, float>;
 using mat3   = glm::mat<3, 3, float>;
 using mat4   = glm::mat<4, 4, float>;
+using mat2x3 = glm::mat<2, 3, float>;
 using mat3x2 = glm::mat<3, 2, float>;
 
 //
@@ -75,6 +76,7 @@ using mat3x2 = glm::mat<3, 2, float>;
 enum CameraModelType
 {
     PINHOLE = 0,
+    PINHOLE_SKEW = 5,
     ORTHO   = 1,
     FISHEYE = 2,
     FTHETA  = 3,

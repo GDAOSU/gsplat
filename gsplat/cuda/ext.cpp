@@ -65,6 +65,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 
     py::enum_<gsplat::CameraModelType>(m, "CameraModelType", py::module_local())
         .value("PINHOLE", gsplat::CameraModelType::PINHOLE)
+        .value("PINHOLE_SKEW", gsplat::CameraModelType::PINHOLE_SKEW)
         .value("ORTHO", gsplat::CameraModelType::ORTHO)
         .value("FISHEYE", gsplat::CameraModelType::FISHEYE)
         .value("FTHETA", gsplat::CameraModelType::FTHETA)
@@ -1166,7 +1167,17 @@ TORCH_LIBRARY(gsplat, m)
         "Tensor, Tensor, Tensor)"
     );
     m.def(
+        "skew_projection_2dgs_fused(Tensor means, Tensor quats, Tensor scales, Tensor viewmats, Tensor Ks, int image_width, "
+        "int image_height, float eps2d, float near_plane, float far_plane, float radius_clip) -> (Tensor, Tensor, "
+        "Tensor, Tensor, Tensor)"
+    );
+    m.def(
         "projection_2dgs_fused_bwd(Tensor means, Tensor quats, Tensor scales, Tensor viewmats, Tensor Ks, int "
+        "image_width, int image_height, Tensor radii, Tensor ray_transforms, Tensor v_means2d, Tensor v_depths, Tensor "
+        "v_ray_transforms, Tensor v_normals, bool viewmats_requires_grad) -> (Tensor, Tensor, Tensor, Tensor?)"
+    );
+    m.def(
+        "skew_projection_2dgs_fused_bwd(Tensor means, Tensor quats, Tensor scales, Tensor viewmats, Tensor Ks, int "
         "image_width, int image_height, Tensor radii, Tensor ray_transforms, Tensor v_means2d, Tensor v_depths, Tensor "
         "v_ray_transforms, Tensor v_normals, bool viewmats_requires_grad) -> (Tensor, Tensor, Tensor, Tensor?)"
     );
@@ -1177,7 +1188,18 @@ TORCH_LIBRARY(gsplat, m)
         "(Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)"
     );
     m.def(
+        "skew_projection_2dgs_packed(Tensor means, Tensor quats, Tensor scales, Tensor viewmats, Tensor Ks, int "
+        "image_width, int image_height, float near_plane, float far_plane, float radius_clip, bool sparse_grad) -> "
+        "(Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)"
+    );
+    m.def(
         "projection_2dgs_packed_bwd(Tensor means, Tensor quats, Tensor scales, Tensor viewmats, Tensor Ks, int "
+        "image_width, int image_height, bool sparse_grad, Tensor batch_ids, Tensor camera_ids, Tensor gaussian_ids, "
+        "Tensor ray_transforms, Tensor v_means2d, Tensor v_depths, Tensor v_ray_transforms, Tensor v_normals, bool "
+        "viewmats_requires_grad) -> (Tensor, Tensor, Tensor, Tensor?)"
+    );
+    m.def(
+        "skew_projection_2dgs_packed_bwd(Tensor means, Tensor quats, Tensor scales, Tensor viewmats, Tensor Ks, int "
         "image_width, int image_height, bool sparse_grad, Tensor batch_ids, Tensor camera_ids, Tensor gaussian_ids, "
         "Tensor ray_transforms, Tensor v_means2d, Tensor v_depths, Tensor v_ray_transforms, Tensor v_normals, bool "
         "viewmats_requires_grad) -> (Tensor, Tensor, Tensor, Tensor?)"
@@ -1204,6 +1226,14 @@ TORCH_LIBRARY(gsplat, m)
     );
     m.def(
         "rasterization_2dgs(Tensor means, Tensor quats, Tensor scales, Tensor opacities, Tensor colors, Tensor "
+        "viewmats, Tensor Ks, int image_width, int image_height, int tile_size, float eps2d, float near_plane, float "
+        "far_plane, float radius_clip, Tensor? backgrounds, bool packed, bool sparse_grad, bool absgrad, bool "
+        "distloss, int? sh_degree, str render_mode, str depth_mode) -> (Tensor, Tensor, Tensor, Tensor?, Tensor, "
+        "Tensor, Tensor, Tensor?, Tensor?, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, "
+        "Tensor, Tensor, int, int, int)"
+    );
+    m.def(
+        "skew_rasterization_2dgs(Tensor means, Tensor quats, Tensor scales, Tensor opacities, Tensor colors, Tensor "
         "viewmats, Tensor Ks, int image_width, int image_height, int tile_size, float eps2d, float near_plane, float "
         "far_plane, float radius_clip, Tensor? backgrounds, bool packed, bool sparse_grad, bool absgrad, bool "
         "distloss, int? sh_degree, str render_mode, str depth_mode) -> (Tensor, Tensor, Tensor, Tensor?, Tensor, "

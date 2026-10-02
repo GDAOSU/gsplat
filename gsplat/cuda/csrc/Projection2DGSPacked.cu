@@ -36,7 +36,7 @@ namespace gsplat
 {
 namespace cg = cooperative_groups;
 
-template<typename scalar_t>
+template<typename scalar_t, bool WithSkew>
 __global__ void projection_2dgs_packed_fwd_kernel(
     const uint32_t B,
     const uint32_t C,
@@ -124,7 +124,7 @@ __global__ void projection_2dgs_packed_fwd_kernel(
         ;
         mat3 WH = mat3(RS_camera[0], RS_camera[1], mean_c);
 
-        mat3 world_2_pix = mat3(Ks[0], 0.0, Ks[2], 0.0, Ks[4], Ks[5], 0.0, 0.0, 1.0);
+        mat3 world_2_pix = mat3(Ks[0], WithSkew ? Ks[1] : 0.0, Ks[2], 0.0, Ks[4], Ks[5], 0.0, 0.0, 1.0);
         M                = glm::transpose(WH) * world_2_pix;
 
         // compute AABB
@@ -242,6 +242,7 @@ __global__ void projection_2dgs_packed_fwd_kernel(
     }
 }
 
+template<bool WithSkew>
 void launch_projection_2dgs_packed_fwd_kernel(
     // inputs
     const at::Tensor means,    // [..., N, 3]
@@ -296,7 +297,7 @@ void launch_projection_2dgs_packed_fwd_kernel(
         return;
     }
 
-    projection_2dgs_packed_fwd_kernel<float><<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
+    projection_2dgs_packed_fwd_kernel<float, WithSkew><<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
         B,
         C,
         N,
@@ -324,7 +325,7 @@ void launch_projection_2dgs_packed_fwd_kernel(
     );
 }
 
-template<typename scalar_t>
+template<typename scalar_t, bool WithSkew>
 __global__ void projection_2dgs_packed_bwd_kernel(
     // fwd inputs
     const uint32_t B,
@@ -397,7 +398,7 @@ __global__ void projection_2dgs_packed_bwd_kernel(
 
     vec4 quat  = glm::make_vec4(quats + bid * N * 4 + gid * 4);
     vec2 scale = glm::make_vec2(scales + bid * N * 3 + gid * 3);
-    mat3 P     = mat3(Ks[0], 0.0, Ks[2], 0.0, Ks[4], Ks[5], 0.0, 0.0, 1.0);
+    mat3 P     = mat3(Ks[0], WithSkew ? Ks[1] : 0.0, Ks[2], 0.0, Ks[4], Ks[5], 0.0, 0.0, 1.0);
 
     mat3 _v_ray_transforms = mat3(
         v_ray_transforms[0],
@@ -518,6 +519,7 @@ __global__ void projection_2dgs_packed_bwd_kernel(
     }
 }
 
+template<bool WithSkew>
 void launch_projection_2dgs_packed_bwd_kernel(
     // fwd inputs
     const at::Tensor means,    // [..., N, 3]
@@ -560,7 +562,7 @@ void launch_projection_2dgs_packed_bwd_kernel(
         return;
     }
 
-    projection_2dgs_packed_bwd_kernel<float><<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
+    projection_2dgs_packed_bwd_kernel<float, WithSkew><<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
         B,
         C,
         N,
@@ -585,6 +587,210 @@ void launch_projection_2dgs_packed_bwd_kernel(
         v_quats.data_ptr<float>(),
         v_scales.data_ptr<float>(),
         v_viewmats.has_value() ? v_viewmats.value().data_ptr<float>() : nullptr
+    );
+}
+
+void launch_projection_2dgs_packed_fwd_kernel(
+    // inputs
+    const at::Tensor means,    // [..., N, 3]
+    const at::Tensor quats,    // [..., N, 4]
+    const at::Tensor scales,   // [..., N, 3]
+    const at::Tensor viewmats, // [..., C, 4, 4]
+    const at::Tensor Ks,       // [..., C, 3, 3]
+    const uint32_t image_width,
+    const uint32_t image_height,
+    const float near_plane,
+    const float far_plane,
+    const float radius_clip,
+    const at::optional<at::Tensor> block_accum, // [B * C * blocks_per_row] packing helper
+    // outputs
+    at::optional<at::Tensor> block_cnts,     // [B * C * blocks_per_row] packing helper
+    at::optional<at::Tensor> indptr,         // [B * C + 1]
+    at::optional<at::Tensor> batch_ids,      // [nnz]
+    at::optional<at::Tensor> camera_ids,     // [nnz]
+    at::optional<at::Tensor> gaussian_ids,   // [nnz]
+    at::optional<at::Tensor> radii,          // [nnz, 2]
+    at::optional<at::Tensor> means2d,        // [nnz, 2]
+    at::optional<at::Tensor> depths,         // [nnz]
+    at::optional<at::Tensor> ray_transforms, // [nnz, 3, 3]
+    at::optional<at::Tensor> normals         // [nnz]
+)
+{
+    launch_projection_2dgs_packed_fwd_kernel<false>(
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        near_plane,
+        far_plane,
+        radius_clip,
+        block_accum,
+        block_cnts,
+        indptr,
+        batch_ids,
+        camera_ids,
+        gaussian_ids,
+        radii,
+        means2d,
+        depths,
+        ray_transforms,
+        normals
+    );
+}
+
+void launch_skew_projection_2dgs_packed_fwd_kernel(
+    // inputs
+    const at::Tensor means,    // [..., N, 3]
+    const at::Tensor quats,    // [..., N, 4]
+    const at::Tensor scales,   // [..., N, 3]
+    const at::Tensor viewmats, // [..., C, 4, 4]
+    const at::Tensor Ks,       // [..., C, 3, 3]
+    const uint32_t image_width,
+    const uint32_t image_height,
+    const float near_plane,
+    const float far_plane,
+    const float radius_clip,
+    const at::optional<at::Tensor> block_accum, // [B * C * blocks_per_row] packing helper
+    // outputs
+    at::optional<at::Tensor> block_cnts,     // [B * C * blocks_per_row] packing helper
+    at::optional<at::Tensor> indptr,         // [B * C + 1]
+    at::optional<at::Tensor> batch_ids,      // [nnz]
+    at::optional<at::Tensor> camera_ids,     // [nnz]
+    at::optional<at::Tensor> gaussian_ids,   // [nnz]
+    at::optional<at::Tensor> radii,          // [nnz, 2]
+    at::optional<at::Tensor> means2d,        // [nnz, 2]
+    at::optional<at::Tensor> depths,         // [nnz]
+    at::optional<at::Tensor> ray_transforms, // [nnz, 3, 3]
+    at::optional<at::Tensor> normals         // [nnz]
+)
+{
+    launch_projection_2dgs_packed_fwd_kernel<true>(
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        near_plane,
+        far_plane,
+        radius_clip,
+        block_accum,
+        block_cnts,
+        indptr,
+        batch_ids,
+        camera_ids,
+        gaussian_ids,
+        radii,
+        means2d,
+        depths,
+        ray_transforms,
+        normals
+    );
+}
+
+void launch_projection_2dgs_packed_bwd_kernel(
+    // fwd inputs
+    const at::Tensor means,    // [..., N, 3]
+    const at::Tensor quats,    // [..., N, 4]
+    const at::Tensor scales,   // [..., N, 3]
+    const at::Tensor viewmats, // [..., C, 4, 4]
+    const at::Tensor Ks,       // [..., C, 3, 3]
+    const uint32_t image_width,
+    const uint32_t image_height,
+    // fwd outputs
+    const at::Tensor batch_ids,      // [nnz]
+    const at::Tensor camera_ids,     // [nnz]
+    const at::Tensor gaussian_ids,   // [nnz]
+    const at::Tensor ray_transforms, // [nnz, 3, 3]
+    // grad outputs
+    const at::Tensor v_means2d,        // [nnz, 2]
+    const at::Tensor v_depths,         // [nnz]
+    const at::Tensor v_ray_transforms, // [nnz, 3, 3]
+    const at::Tensor v_normals,        // [nnz, 3]
+    const bool sparse_grad,
+    // grad inputs
+    at::Tensor v_means,                 // [..., N, 3] or [nnz, 3]
+    at::Tensor v_quats,                 // [..., N, 4] or [nnz, 4]
+    at::Tensor v_scales,                // [..., N, 3] or [nnz, 3]
+    at::optional<at::Tensor> v_viewmats // [..., C, 4, 4] Optional
+)
+{
+    launch_projection_2dgs_packed_bwd_kernel<false>(
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        batch_ids,
+        camera_ids,
+        gaussian_ids,
+        ray_transforms,
+        v_means2d,
+        v_depths,
+        v_ray_transforms,
+        v_normals,
+        sparse_grad,
+        v_means,
+        v_quats,
+        v_scales,
+        v_viewmats
+    );
+}
+
+void launch_skew_projection_2dgs_packed_bwd_kernel(
+    // fwd inputs
+    const at::Tensor means,    // [..., N, 3]
+    const at::Tensor quats,    // [..., N, 4]
+    const at::Tensor scales,   // [..., N, 3]
+    const at::Tensor viewmats, // [..., C, 4, 4]
+    const at::Tensor Ks,       // [..., C, 3, 3]
+    const uint32_t image_width,
+    const uint32_t image_height,
+    // fwd outputs
+    const at::Tensor batch_ids,      // [nnz]
+    const at::Tensor camera_ids,     // [nnz]
+    const at::Tensor gaussian_ids,   // [nnz]
+    const at::Tensor ray_transforms, // [nnz, 3, 3]
+    // grad outputs
+    const at::Tensor v_means2d,        // [nnz, 2]
+    const at::Tensor v_depths,         // [nnz]
+    const at::Tensor v_ray_transforms, // [nnz, 3, 3]
+    const at::Tensor v_normals,        // [nnz, 3]
+    const bool sparse_grad,
+    // grad inputs
+    at::Tensor v_means,                 // [..., N, 3] or [nnz, 3]
+    at::Tensor v_quats,                 // [..., N, 4] or [nnz, 4]
+    at::Tensor v_scales,                // [..., N, 3] or [nnz, 3]
+    at::optional<at::Tensor> v_viewmats // [..., C, 4, 4] Optional
+)
+{
+    launch_projection_2dgs_packed_bwd_kernel<true>(
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        batch_ids,
+        camera_ids,
+        gaussian_ids,
+        ray_transforms,
+        v_means2d,
+        v_depths,
+        v_ray_transforms,
+        v_normals,
+        sparse_grad,
+        v_means,
+        v_quats,
+        v_scales,
+        v_viewmats
     );
 }
 } // namespace gsplat

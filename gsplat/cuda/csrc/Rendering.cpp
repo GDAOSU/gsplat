@@ -1656,6 +1656,7 @@ namespace
     // Unproject a z-depth map to world-space points. Uses the z-depth convention,
     // so per-pixel ray directions are not normalized. depths [..., H, W, 1],
     // camtoworlds [..., 4, 4], Ks [..., 3, 3]; returns [..., H, W, 3].
+    template<bool WithSkew>
     at::Tensor depth_to_points_2dgs(const at::Tensor &depths, const at::Tensor &camtoworlds, const at::Tensor &Ks)
     {
         const int64_t height         = depths.size(-3);
@@ -1672,6 +1673,11 @@ namespace
 
         at::Tensor dx = (x - cx + 0.5) / fx; // [..., H, W]
         at::Tensor dy = (y - cy + 0.5) / fy;
+        if constexpr(WithSkew)
+        {
+            at::Tensor skew = Ks.select(-2, 0).select(-1, 1).unsqueeze(-1).unsqueeze(-1);
+            dx              = dx - skew * dy / fx;
+        }
         at::Tensor camera_dirs = at::stack({dx, dy}, -1);                       // [..., H, W, 2]
         camera_dirs            = at::constant_pad_nd(camera_dirs, {0, 1}, 1.0); // [..., H, W, 3]
 
@@ -1683,9 +1689,10 @@ namespace
 
     // Surface normals from a z-depth map: unproject to points, then normalize the
     // cross product of neighbouring-pixel point differences (padded back to H×W).
+    template<bool WithSkew>
     at::Tensor depth_to_normal_2dgs(const at::Tensor &depths, const at::Tensor &camtoworlds, const at::Tensor &Ks)
     {
-        at::Tensor points   = depth_to_points_2dgs(depths, camtoworlds, Ks); // [..., H, W, 3]
+        at::Tensor points   = depth_to_points_2dgs<WithSkew>(depths, camtoworlds, Ks); // [..., H, W, 3]
         const int64_t h_dim = points.dim() - 3;
         const int64_t w_dim = points.dim() - 2;
         const int64_t H     = points.size(h_dim);
@@ -1701,7 +1708,9 @@ namespace
         return at::constant_pad_nd(normals, {0, 0, 1, 1, 1, 1}, 0.0); // [..., H, W, 3]
     }
 } // namespace
-Rasterization2DGSResult rasterization_2dgs(
+
+template<bool WithSkew>
+Rasterization2DGSResult rasterization_2dgs_impl(
     const at::Tensor &means,
     const at::Tensor &quats,
     const at::Tensor &scales,
@@ -1771,7 +1780,7 @@ Rasterization2DGSResult rasterization_2dgs(
     at::optional<at::Tensor> image_ids;
     if(packed)
     {
-        Projection2DGSPackedResult projection = projection_2dgs_packed(
+        Projection2DGSPackedResult projection = (WithSkew ? skew_projection_2dgs_packed : projection_2dgs_packed)(
             means,
             quats,
             scales,
@@ -1800,7 +1809,7 @@ Rasterization2DGSResult rasterization_2dgs(
     }
     else
     {
-        Projection2DGSFusedResult projection = projection_2dgs_fused(
+        Projection2DGSFusedResult projection = (WithSkew ? skew_projection_2dgs_fused : projection_2dgs_fused)(
             means, quats, scales, viewmats, Ks, image_width, image_height, eps2d, near_plane, far_plane, radius_clip
         );
         radii                              = projection.radii;
@@ -1939,7 +1948,7 @@ Rasterization2DGSResult rasterization_2dgs(
         at::Tensor depth_for_normal
             = depth_mode_is_median ? render_median : render_colors.narrow(-1, render_colors.size(-1) - 1, 1);
         at::Tensor camtoworlds    = at::linalg_inv(viewmats);
-        render_normals_from_depth = depth_to_normal_2dgs(depth_for_normal, camtoworlds, Ks).squeeze(0);
+        render_normals_from_depth = depth_to_normal_2dgs<WithSkew>(depth_for_normal, camtoworlds, Ks).squeeze(0);
     }
 
     // Rotate the rendered (camera-space) normals into world space.
@@ -1973,6 +1982,108 @@ Rasterization2DGSResult rasterization_2dgs(
     };
 }
 
+Rasterization2DGSResult rasterization_2dgs(
+    const at::Tensor &means,
+    const at::Tensor &quats,
+    const at::Tensor &scales,
+    const at::Tensor &opacities,
+    const at::Tensor &colors,
+    const at::Tensor &viewmats,
+    const at::Tensor &Ks,
+    int64_t image_width,
+    int64_t image_height,
+    int64_t tile_size,
+    float eps2d,
+    float near_plane,
+    float far_plane,
+    float radius_clip,
+    const at::optional<at::Tensor> &backgrounds,
+    bool packed,
+    bool sparse_grad,
+    bool absgrad,
+    bool distloss,
+    at::optional<int64_t> sh_degree,
+    const std::string &render_mode,
+    const std::string &depth_mode
+)
+{
+    return rasterization_2dgs_impl<false>(
+        means,
+        quats,
+        scales,
+        opacities,
+        colors,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        tile_size,
+        eps2d,
+        near_plane,
+        far_plane,
+        radius_clip,
+        backgrounds,
+        packed,
+        sparse_grad,
+        absgrad,
+        distloss,
+        sh_degree,
+        render_mode,
+        depth_mode
+    );
+}
+
+Rasterization2DGSResult skew_rasterization_2dgs(
+    const at::Tensor &means,
+    const at::Tensor &quats,
+    const at::Tensor &scales,
+    const at::Tensor &opacities,
+    const at::Tensor &colors,
+    const at::Tensor &viewmats,
+    const at::Tensor &Ks,
+    int64_t image_width,
+    int64_t image_height,
+    int64_t tile_size,
+    float eps2d,
+    float near_plane,
+    float far_plane,
+    float radius_clip,
+    const at::optional<at::Tensor> &backgrounds,
+    bool packed,
+    bool sparse_grad,
+    bool absgrad,
+    bool distloss,
+    at::optional<int64_t> sh_degree,
+    const std::string &render_mode,
+    const std::string &depth_mode
+)
+{
+    return rasterization_2dgs_impl<true>(
+        means,
+        quats,
+        scales,
+        opacities,
+        colors,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        tile_size,
+        eps2d,
+        near_plane,
+        far_plane,
+        radius_clip,
+        backgrounds,
+        packed,
+        sparse_grad,
+        absgrad,
+        distloss,
+        sh_degree,
+        render_mode,
+        depth_mode
+    );
+}
+
 #endif // GSPLAT_BUILD_2DGS
 
 void register_rendering_cuda_impl(torch::Library &m)
@@ -1982,6 +2093,7 @@ void register_rendering_cuda_impl(torch::Library &m)
 #endif
 #if GSPLAT_BUILD_2DGS
     m.impl("rasterization_2dgs", to_torch_op<&rasterization_2dgs>);
+    m.impl("skew_rasterization_2dgs", to_torch_op<&skew_rasterization_2dgs>);
 #endif
 }
 
@@ -1992,6 +2104,7 @@ void register_rendering_autograd_cuda_impl(torch::Library &m)
 #endif
 #if GSPLAT_BUILD_2DGS
     m.impl("rasterization_2dgs", to_torch_op<&rasterization_2dgs>);
+    m.impl("skew_rasterization_2dgs", to_torch_op<&skew_rasterization_2dgs>);
 #endif
 }
 

@@ -35,7 +35,7 @@ from gsplat.cuda._lidar import (
 )
 
 ExternalDistortionModelMeta = Literal["bivariate-windshield"]
-CameraModel = Literal["pinhole", "ortho", "fisheye", "ftheta", "lidar"]
+CameraModel = Literal["pinhole", "pinhole_skew", "ortho", "fisheye", "ftheta", "lidar"]
 
 # Autograd for the migrated ops is attached in Python (torch.library.register_autograd)
 # rather than C++. The C++ module exports only each op's `<op>_fwd` and `<op>_bwd`; the
@@ -105,6 +105,8 @@ def _ensure_autograd_registrations() -> None:
     _register_autograd(RegisterProjectionEWA3DGSPacked)
     _register_autograd(RegisterProjection2DGSFused)
     _register_autograd(RegisterProjection2DGSPacked)
+    _register_autograd(RegisterSkewProjection2DGSFused)
+    _register_autograd(RegisterSkewProjection2DGSPacked)
     _register_autograd(RegisterRasterizeToPixels3DGS)
     _register_autograd(RegisterRasterizeToPixels2DGS)
     _register_autograd(RegisterRasterizeToPixelsSparse)
@@ -2314,6 +2316,11 @@ def rasterize_to_pixels_eval3d(
         - **Rendered colors**. [..., C, image_height, image_width, channels]
         - **Rendered alphas**. [..., C, image_height, image_width, 1]
     """
+    if camera_model == "pinhole_skew":
+        raise ValueError(
+            "pinhole_skew supports EWA projection only; UT/eval3d is unsupported."
+        )
+
     if ut_params is None:
         ut_params = UnscentedTransformParameters()
 
@@ -2424,6 +2431,11 @@ def rasterize_to_pixels_eval3d_extra(
         - **Sample counts** (optional). [..., C, image_height, image_width]. If return_sample_counts=True.
         - **Rendered normals** (optional). [..., C, image_height, image_width, 3]. If return_normals=True.
     """
+    if camera_model == "pinhole_skew":
+        raise ValueError(
+            "pinhole_skew supports EWA projection only; UT/eval3d is unsupported."
+        )
+
     if ut_params is None:
         ut_params = UnscentedTransformParameters()
     renderer_config = _renderer_config_to_cuda(renderer_config)
@@ -2593,6 +2605,11 @@ def fully_fused_projection_with_ut(
             come from calibration and must not be raised merely to widen rendered FOV: its forward
             polynomial is trusted only over ``[0, max_angle]``. Default: True.
     """
+    if camera_model == "pinhole_skew":
+        raise ValueError(
+            "pinhole_skew supports EWA projection only; UT/eval3d is unsupported."
+        )
+
     if lidar_coeffs is not None:
         assert isinstance(
             lidar_coeffs, RowOffsetStructuredSpinningLidarModelParametersExt
@@ -2646,7 +2663,7 @@ def fully_fused_projection_2dgs(
     radius_clip: float = 0.0,
     packed: bool = False,
     sparse_grad: bool = False,
-    camera_model: Literal["pinhole", "ortho"] = "pinhole",
+    camera_model: Literal["pinhole", "pinhole_skew", "ortho"] = "pinhole",
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
     """Prepare Gaussians for rasterization
 
@@ -2711,7 +2728,7 @@ def fully_fused_projection_2dgs(
             sparse_grad=sparse_grad,
             camera_model=camera_model,
         )
-    if camera_model != "pinhole":
+    if camera_model not in {"pinhole", "pinhole_skew"}:
         raise ValueError(f"Unsupported camera model: {camera_model}")
 
     means = means.contiguous()
@@ -2723,7 +2740,11 @@ def fully_fused_projection_2dgs(
     viewmats = viewmats.contiguous()
     Ks = Ks.contiguous()
     if packed:
-        return _make_lazy_cuda_func("projection_2dgs_packed")(
+        return _make_lazy_cuda_func(
+            "skew_projection_2dgs_packed"
+            if camera_model == "pinhole_skew"
+            else "projection_2dgs_packed"
+        )(
             means,
             quats,
             scales,
@@ -2737,7 +2758,11 @@ def fully_fused_projection_2dgs(
             sparse_grad,
         )
     else:
-        return _make_lazy_cuda_func("projection_2dgs_fused")(
+        return _make_lazy_cuda_func(
+            "skew_projection_2dgs_fused"
+            if camera_model == "pinhole_skew"
+            else "projection_2dgs_fused"
+        )(
             means,
             quats,
             scales,
@@ -2940,6 +2965,12 @@ class RegisterProjection2DGSPacked:
         )
 
 
+class RegisterSkewProjection2DGSFused(RegisterProjection2DGSFused):
+    base = "skew_projection_2dgs_fused"
+
+
+class RegisterSkewProjection2DGSPacked(RegisterProjection2DGSPacked):
+    base = "skew_projection_2dgs_packed"
 
 
 def rasterize_to_pixels_2dgs(
@@ -2959,7 +2990,7 @@ def rasterize_to_pixels_2dgs(
     packed: bool = False,
     absgrad: bool = False,
     distloss: bool = False,
-    camera_model: Literal["pinhole", "ortho"] = "pinhole",
+    camera_model: Literal["pinhole", "pinhole_skew", "ortho"] = "pinhole",
 ) -> Tuple[Tensor, Tensor]:
     """Rasterize Gaussians to pixels.
 
@@ -3013,7 +3044,7 @@ def rasterize_to_pixels_2dgs(
             distloss=distloss,
             camera_model=camera_model,
         )
-    if camera_model != "pinhole":
+    if camera_model not in {"pinhole", "pinhole_skew"}:
         raise ValueError(f"Unsupported camera model: {camera_model}")
 
     if backgrounds is not None:
@@ -3216,7 +3247,7 @@ def rasterize_to_indices_in_range_2dgs(
     tile_size: int,
     isect_offsets: Tensor,
     flatten_ids: Tensor,
-    camera_model: Literal["pinhole", "ortho"] = "pinhole",
+    camera_model: Literal["pinhole", "pinhole_skew", "ortho"] = "pinhole",
 ) -> Tuple[Tensor, Tensor, Tensor]:
     """Rasterizes a batch of Gaussians to images but only returns the indices.
 
@@ -3265,7 +3296,7 @@ def rasterize_to_indices_in_range_2dgs(
             flatten_ids=flatten_ids,
             camera_model=camera_model,
         )
-    if camera_model != "pinhole":
+    if camera_model not in {"pinhole", "pinhole_skew"}:
         raise ValueError(f"Unsupported camera model: {camera_model}")
 
     return _make_lazy_cuda_func("rasterize_to_indices_2dgs")(

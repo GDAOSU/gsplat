@@ -523,6 +523,11 @@ def rasterization(
         'flatten_ids', 'isect_offsets', 'width', 'height', 'tile_size'])
 
     """
+    if camera_model == "pinhole_skew" and (with_ut or with_eval3d):
+        raise ValueError(
+            "pinhole_skew supports EWA projection only; UT/eval3d is unsupported."
+        )
+
     has_color = render_mode_has_color(render_mode)
 
     external_distortion_coeffs = cast(
@@ -1378,7 +1383,7 @@ def rasterization_2dgs(
     absgrad: bool = False,
     distloss: bool = False,
     depth_mode: Literal["expected", "median"] = "expected",
-    camera_model: Literal["pinhole", "ortho"] = "pinhole",
+    camera_model: Literal["pinhole", "pinhole_skew", "ortho"] = "pinhole",
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Dict]:
     """Rasterize a set of 2D Gaussians (N) to a batch of image planes (C).
 
@@ -1510,7 +1515,7 @@ def rasterization_2dgs(
             depth_mode=depth_mode,
             camera_model=camera_model,
         )
-    if camera_model != "pinhole":
+    if camera_model not in {"pinhole", "pinhole_skew"}:
         raise ValueError(f"Unsupported camera model: {camera_model}")
 
     (
@@ -1537,7 +1542,11 @@ def rasterization_2dgs(
         tile_width,
         tile_height,
         n_cameras,
-    ) = _make_lazy_cuda_func("rasterization_2dgs")(
+    ) = _make_lazy_cuda_func(
+        "skew_rasterization_2dgs"
+        if camera_model == "pinhole_skew"
+        else "rasterization_2dgs"
+    )(
         means.contiguous(),
         quats.contiguous(),
         scales.contiguous(),

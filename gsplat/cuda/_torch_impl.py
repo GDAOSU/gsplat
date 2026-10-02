@@ -108,6 +108,16 @@ def _persp_proj(
     return means2d, cov2d  # [..., C, N, 2], [..., C, N, 2, 2]
 
 
+def _persp_skew_proj(means: Tensor, covars: Tensor, Ks: Tensor, width: int, height: int):
+    shear = torch.eye(3, device=means.device, dtype=means.dtype).expand(Ks.shape).clone()
+    shear[..., 0, 1] = Ks[..., 0, 1] / Ks[..., 0, 0]
+    sheared_means = torch.einsum("...cij,...cnj->...cni", shear, means)
+    sheared_covars = shear[..., None, :, :] @ covars @ shear[..., None, :, :].transpose(-1, -2)
+    zero_skew_Ks = Ks.clone()
+    zero_skew_Ks[..., 0, 1] = 0
+    return _persp_proj(sheared_means, sheared_covars, zero_skew_Ks, width, height)
+
+
 def _fisheye_proj(
     means: Tensor,  # [..., C, N, 3]
     covars: Tensor,  # [..., C, N, 3, 3]
@@ -299,6 +309,8 @@ def _fully_fused_projection(
         means2d, covars2d = _fisheye_proj(means_c, covars_c, Ks, width, height)
     elif camera_model == "pinhole":
         means2d, covars2d = _persp_proj(means_c, covars_c, Ks, width, height)
+    elif camera_model == "pinhole_skew":
+        means2d, covars2d = _persp_skew_proj(means_c, covars_c, Ks, width, height)
     else:
         assert_never(camera_model)
 

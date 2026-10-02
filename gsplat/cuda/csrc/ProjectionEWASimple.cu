@@ -33,7 +33,7 @@ namespace gsplat
 {
 namespace cg = cooperative_groups;
 
-template<typename scalar_t>
+template<typename scalar_t, bool WithSkew>
 __global__ void projection_ewa_simple_fwd_kernel(
     const uint32_t B,
     const uint32_t C,
@@ -71,17 +71,24 @@ __global__ void projection_ewa_simple_fwd_kernel(
     const vec3 mean  = glm::make_vec3(means);
     const mat3 covar = glm::make_mat3(covars);
 
-    switch(camera_model)
+    if constexpr(WithSkew)
     {
-    case CameraModelType::PINHOLE: // perspective projection
-        persp_proj(mean, covar, fx, fy, cx, cy, width, height, covar2d, mean2d);
-        break;
-    case CameraModelType::ORTHO: // orthographic projection
-        ortho_proj(mean, covar, fx, fy, cx, cy, width, height, covar2d, mean2d);
-        break;
-    case CameraModelType::FISHEYE: // fisheye projection
-        fisheye_proj(mean, covar, fx, fy, cx, cy, width, height, covar2d, mean2d);
-        break;
+        persp_skew_proj(mean, covar, fx, fy, cx, cy, Ks[1], width, height, covar2d, mean2d);
+    }
+    else
+    {
+        switch(camera_model)
+        {
+        case CameraModelType::PINHOLE: // perspective projection
+            persp_proj(mean, covar, fx, fy, cx, cy, width, height, covar2d, mean2d);
+            break;
+        case CameraModelType::ORTHO: // orthographic projection
+            ortho_proj(mean, covar, fx, fy, cx, cy, width, height, covar2d, mean2d);
+            break;
+        case CameraModelType::FISHEYE: // fisheye projection
+            fisheye_proj(mean, covar, fx, fy, cx, cy, width, height, covar2d, mean2d);
+            break;
+        }
     }
 
 // write to outputs: glm is column-major but we want row-major
@@ -134,24 +141,45 @@ void launch_projection_ewa_simple_fwd_kernel(
         "projection_ewa_simple_fwd_kernel",
         [&]()
         {
-            projection_ewa_simple_fwd_kernel<scalar_t><<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
-                B,
-                C,
-                N,
-                means.const_data_ptr<scalar_t>(),
-                covars.const_data_ptr<scalar_t>(),
-                Ks.const_data_ptr<scalar_t>(),
-                width,
-                height,
-                camera_model,
-                means2d.data_ptr<scalar_t>(),
-                covars2d.data_ptr<scalar_t>()
-            );
+            if(camera_model == CameraModelType::PINHOLE_SKEW)
+            {
+                projection_ewa_simple_fwd_kernel<scalar_t, true>
+                    <<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
+                        B,
+                        C,
+                        N,
+                        means.const_data_ptr<scalar_t>(),
+                        covars.const_data_ptr<scalar_t>(),
+                        Ks.const_data_ptr<scalar_t>(),
+                        width,
+                        height,
+                        camera_model,
+                        means2d.data_ptr<scalar_t>(),
+                        covars2d.data_ptr<scalar_t>()
+                    );
+            }
+            else
+            {
+                projection_ewa_simple_fwd_kernel<scalar_t, false>
+                    <<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
+                        B,
+                        C,
+                        N,
+                        means.const_data_ptr<scalar_t>(),
+                        covars.const_data_ptr<scalar_t>(),
+                        Ks.const_data_ptr<scalar_t>(),
+                        width,
+                        height,
+                        camera_model,
+                        means2d.data_ptr<scalar_t>(),
+                        covars2d.data_ptr<scalar_t>()
+                    );
+            }
         }
     );
 }
 
-template<typename scalar_t>
+template<typename scalar_t, bool WithSkew>
 __global__ void projection_ewa_simple_bwd_kernel(
     const uint32_t B,
     const uint32_t C,
@@ -196,23 +224,32 @@ __global__ void projection_ewa_simple_bwd_kernel(
     const vec2 v_mean2d  = glm::make_vec2(v_means2d);
     const mat2 v_covar2d = glm::make_mat2(v_covars2d);
 
-    switch(camera_model)
+    if constexpr(WithSkew)
     {
-    case CameraModelType::PINHOLE: // perspective projection
-        persp_proj_vjp(
-            mean, covar, fx, fy, cx, cy, width, height, glm::transpose(v_covar2d), v_mean2d, v_mean, v_covar
+        persp_skew_proj_vjp(
+            mean, covar, fx, fy, cx, cy, Ks[1], width, height, glm::transpose(v_covar2d), v_mean2d, v_mean, v_covar
         );
-        break;
-    case CameraModelType::ORTHO: // orthographic projection
-        ortho_proj_vjp(
-            mean, covar, fx, fy, cx, cy, width, height, glm::transpose(v_covar2d), v_mean2d, v_mean, v_covar
-        );
-        break;
-    case CameraModelType::FISHEYE: // fisheye projection
-        fisheye_proj_vjp(
-            mean, covar, fx, fy, cx, cy, width, height, glm::transpose(v_covar2d), v_mean2d, v_mean, v_covar
-        );
-        break;
+    }
+    else
+    {
+        switch(camera_model)
+        {
+        case CameraModelType::PINHOLE: // perspective projection
+            persp_proj_vjp(
+                mean, covar, fx, fy, cx, cy, width, height, glm::transpose(v_covar2d), v_mean2d, v_mean, v_covar
+            );
+            break;
+        case CameraModelType::ORTHO: // orthographic projection
+            ortho_proj_vjp(
+                mean, covar, fx, fy, cx, cy, width, height, glm::transpose(v_covar2d), v_mean2d, v_mean, v_covar
+            );
+            break;
+        case CameraModelType::FISHEYE: // fisheye projection
+            fisheye_proj_vjp(
+                mean, covar, fx, fy, cx, cy, width, height, glm::transpose(v_covar2d), v_mean2d, v_mean, v_covar
+            );
+            break;
+        }
     }
 
 // write to outputs: glm is column-major but we want row-major
@@ -268,21 +305,44 @@ void launch_projection_ewa_simple_bwd_kernel(
         "projection_ewa_simple_bwd_kernel",
         [&]()
         {
-            projection_ewa_simple_bwd_kernel<scalar_t><<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
-                B,
-                C,
-                N,
-                means.const_data_ptr<scalar_t>(),
-                covars.const_data_ptr<scalar_t>(),
-                Ks.const_data_ptr<scalar_t>(),
-                width,
-                height,
-                camera_model,
-                v_means2d.const_data_ptr<scalar_t>(),
-                v_covars2d.const_data_ptr<scalar_t>(),
-                v_means.data_ptr<scalar_t>(),
-                v_covars.data_ptr<scalar_t>()
-            );
+            if(camera_model == CameraModelType::PINHOLE_SKEW)
+            {
+                projection_ewa_simple_bwd_kernel<scalar_t, true>
+                    <<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
+                        B,
+                        C,
+                        N,
+                        means.const_data_ptr<scalar_t>(),
+                        covars.const_data_ptr<scalar_t>(),
+                        Ks.const_data_ptr<scalar_t>(),
+                        width,
+                        height,
+                        camera_model,
+                        v_means2d.const_data_ptr<scalar_t>(),
+                        v_covars2d.const_data_ptr<scalar_t>(),
+                        v_means.data_ptr<scalar_t>(),
+                        v_covars.data_ptr<scalar_t>()
+                    );
+            }
+            else
+            {
+                projection_ewa_simple_bwd_kernel<scalar_t, false>
+                    <<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
+                        B,
+                        C,
+                        N,
+                        means.const_data_ptr<scalar_t>(),
+                        covars.const_data_ptr<scalar_t>(),
+                        Ks.const_data_ptr<scalar_t>(),
+                        width,
+                        height,
+                        camera_model,
+                        v_means2d.const_data_ptr<scalar_t>(),
+                        v_covars2d.const_data_ptr<scalar_t>(),
+                        v_means.data_ptr<scalar_t>(),
+                        v_covars.data_ptr<scalar_t>()
+                    );
+            }
         }
     );
 }

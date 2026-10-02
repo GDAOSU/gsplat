@@ -35,7 +35,7 @@ namespace gsplat
 {
 namespace cg = cooperative_groups;
 
-template<typename scalar_t>
+template<typename scalar_t, bool WithSkew>
 __global__ void projection_2dgs_fused_fwd_kernel(
     const uint32_t B,
     const uint32_t C,
@@ -170,7 +170,7 @@ __global__ void projection_2dgs_fused_fwd_kernel(
     // projective transformation matrix: Camera -> Screen
     // when write in this order, the matrix is actually K^T as glm will read it
     // in column major order [Ks[0],  0,  0] [0,   Ks[4],  0] [Ks[2], Ks[5],  1]
-    mat3 world_2_pix = mat3(Ks[0], 0.0, Ks[2], 0.0, Ks[4], Ks[5], 0.0, 0.0, 1.0);
+    mat3 world_2_pix = mat3(Ks[0], WithSkew ? Ks[1] : 0.0, Ks[2], 0.0, Ks[4], Ks[5], 0.0, 0.0, 1.0);
 
     // WH is defined as [R⋅v_x, R⋅v_y, mean_c]: q_uv = [u,v,-1] -> q_cam =
     // [c1,c2,c3] here is the issue, world_2_pix is actually K^T M is thus
@@ -280,6 +280,7 @@ __global__ void projection_2dgs_fused_fwd_kernel(
     normals[idx * 3 + 2] = normal.z;
 }
 
+template<bool WithSkew>
 void launch_projection_2dgs_fused_fwd_kernel(
     // inputs
     const at::Tensor means,    // [..., N, 3]
@@ -315,7 +316,7 @@ void launch_projection_2dgs_fused_fwd_kernel(
         return;
     }
 
-    projection_2dgs_fused_fwd_kernel<float><<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
+    projection_2dgs_fused_fwd_kernel<float, WithSkew><<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
         B,
         C,
         N,
@@ -337,7 +338,7 @@ void launch_projection_2dgs_fused_fwd_kernel(
     );
 }
 
-template<typename scalar_t>
+template<typename scalar_t, bool WithSkew>
 __global__ void projection_2dgs_fused_bwd_kernel(
     // fwd inputs
     const uint32_t B,
@@ -407,7 +408,7 @@ __global__ void projection_2dgs_fused_bwd_kernel(
     vec4 quat  = glm::make_vec4(quats + bid * N * 4 + gid * 4);
     vec2 scale = glm::make_vec2(scales + bid * N * 3 + gid * 3);
 
-    mat3 P = mat3(Ks[0], 0.0, Ks[2], 0.0, Ks[4], Ks[5], 0.0, 0.0, 1.0);
+    mat3 P = mat3(Ks[0], WithSkew ? Ks[1] : 0.0, Ks[2], 0.0, Ks[4], Ks[5], 0.0, 0.0, 1.0);
 
     mat3 _v_ray_transforms = mat3(
         v_ray_transforms[0],
@@ -504,6 +505,7 @@ __global__ void projection_2dgs_fused_bwd_kernel(
     }
 }
 
+template<bool WithSkew>
 void launch_projection_2dgs_fused_bwd_kernel(
     // fwd inputs
     const at::Tensor means,    // [..., N, 3]
@@ -544,7 +546,7 @@ void launch_projection_2dgs_fused_bwd_kernel(
         return;
     }
 
-    projection_2dgs_fused_bwd_kernel<float><<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
+    projection_2dgs_fused_bwd_kernel<float, WithSkew><<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
         B,
         C,
         N,
@@ -565,6 +567,178 @@ void launch_projection_2dgs_fused_bwd_kernel(
         v_quats.data_ptr<float>(),
         v_scales.data_ptr<float>(),
         viewmats_requires_grad ? v_viewmats.data_ptr<float>() : nullptr
+    );
+}
+
+void launch_projection_2dgs_fused_fwd_kernel(
+    // inputs
+    const at::Tensor means,    // [..., N, 3]
+    const at::Tensor quats,    // [..., N, 4]
+    const at::Tensor scales,   // [..., N, 3]
+    const at::Tensor viewmats, // [..., C, 4, 4]
+    const at::Tensor Ks,       // [..., C, 3, 3]
+    const uint32_t image_width,
+    const uint32_t image_height,
+    const float near_plane,
+    const float far_plane,
+    const float radius_clip,
+    // outputs
+    at::Tensor radii,          // [..., C, N, 2]
+    at::Tensor means2d,        // [..., C, N, 2]
+    at::Tensor depths,         // [..., C, N]
+    at::Tensor ray_transforms, // [..., C, N, 3, 3]
+    at::Tensor normals         // [..., C, N, 3]
+)
+{
+    launch_projection_2dgs_fused_fwd_kernel<false>(
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        near_plane,
+        far_plane,
+        radius_clip,
+        radii,
+        means2d,
+        depths,
+        ray_transforms,
+        normals
+    );
+}
+
+void launch_skew_projection_2dgs_fused_fwd_kernel(
+    // inputs
+    const at::Tensor means,    // [..., N, 3]
+    const at::Tensor quats,    // [..., N, 4]
+    const at::Tensor scales,   // [..., N, 3]
+    const at::Tensor viewmats, // [..., C, 4, 4]
+    const at::Tensor Ks,       // [..., C, 3, 3]
+    const uint32_t image_width,
+    const uint32_t image_height,
+    const float near_plane,
+    const float far_plane,
+    const float radius_clip,
+    // outputs
+    at::Tensor radii,          // [..., C, N, 2]
+    at::Tensor means2d,        // [..., C, N, 2]
+    at::Tensor depths,         // [..., C, N]
+    at::Tensor ray_transforms, // [..., C, N, 3, 3]
+    at::Tensor normals         // [..., C, N, 3]
+)
+{
+    launch_projection_2dgs_fused_fwd_kernel<true>(
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        near_plane,
+        far_plane,
+        radius_clip,
+        radii,
+        means2d,
+        depths,
+        ray_transforms,
+        normals
+    );
+}
+
+void launch_projection_2dgs_fused_bwd_kernel(
+    // fwd inputs
+    const at::Tensor means,    // [..., N, 3]
+    const at::Tensor quats,    // [..., N, 4]
+    const at::Tensor scales,   // [..., N, 3]
+    const at::Tensor viewmats, // [..., C, 4, 4]
+    const at::Tensor Ks,       // [..., C, 3, 3]
+    const uint32_t image_width,
+    const uint32_t image_height,
+    // fwd outputs
+    const at::Tensor radii,          // [..., C, N, 2]
+    const at::Tensor ray_transforms, // [..., C, N, 3, 3]
+    // grad outputs
+    const at::Tensor v_means2d,        // [..., C, N, 2]
+    const at::Tensor v_depths,         // [..., C, N]
+    const at::Tensor v_normals,        // [..., C, N, 3]
+    const at::Tensor v_ray_transforms, // [..., C, N, 3, 3]
+    const bool viewmats_requires_grad,
+    // outputs
+    at::Tensor v_means,   // [..., N, 3]
+    at::Tensor v_quats,   // [..., N, 4]
+    at::Tensor v_scales,  // [..., N, 3]
+    at::Tensor v_viewmats // [..., C, 4, 4]
+)
+{
+    launch_projection_2dgs_fused_bwd_kernel<false>(
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        radii,
+        ray_transforms,
+        v_means2d,
+        v_depths,
+        v_normals,
+        v_ray_transforms,
+        viewmats_requires_grad,
+        v_means,
+        v_quats,
+        v_scales,
+        v_viewmats
+    );
+}
+
+void launch_skew_projection_2dgs_fused_bwd_kernel(
+    // fwd inputs
+    const at::Tensor means,    // [..., N, 3]
+    const at::Tensor quats,    // [..., N, 4]
+    const at::Tensor scales,   // [..., N, 3]
+    const at::Tensor viewmats, // [..., C, 4, 4]
+    const at::Tensor Ks,       // [..., C, 3, 3]
+    const uint32_t image_width,
+    const uint32_t image_height,
+    // fwd outputs
+    const at::Tensor radii,          // [..., C, N, 2]
+    const at::Tensor ray_transforms, // [..., C, N, 3, 3]
+    // grad outputs
+    const at::Tensor v_means2d,        // [..., C, N, 2]
+    const at::Tensor v_depths,         // [..., C, N]
+    const at::Tensor v_normals,        // [..., C, N, 3]
+    const at::Tensor v_ray_transforms, // [..., C, N, 3, 3]
+    const bool viewmats_requires_grad,
+    // outputs
+    at::Tensor v_means,   // [..., N, 3]
+    at::Tensor v_quats,   // [..., N, 4]
+    at::Tensor v_scales,  // [..., N, 3]
+    at::Tensor v_viewmats // [..., C, 4, 4]
+)
+{
+    launch_projection_2dgs_fused_bwd_kernel<true>(
+        means,
+        quats,
+        scales,
+        viewmats,
+        Ks,
+        image_width,
+        image_height,
+        radii,
+        ray_transforms,
+        v_means2d,
+        v_depths,
+        v_normals,
+        v_ray_transforms,
+        viewmats_requires_grad,
+        v_means,
+        v_quats,
+        v_scales,
+        v_viewmats
     );
 }
 } // namespace gsplat

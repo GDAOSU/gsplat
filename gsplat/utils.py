@@ -246,6 +246,32 @@ def depth_to_normal(
     return normals
 
 
+def depth_to_points_skew(
+    depths: Tensor, camtoworlds: Tensor, Ks: Tensor, z_depth: bool = True
+) -> Tensor:
+    height, width = depths.shape[-3:-1]
+    horizontal, vertical = torch.meshgrid(
+        torch.arange(width, device=depths.device, dtype=depths.dtype) + 0.5,
+        torch.arange(height, device=depths.device, dtype=depths.dtype) + 0.5,
+        indexing="xy",
+    )
+    pixels = torch.stack((horizontal, vertical, torch.ones_like(horizontal)), dim=-1)
+    camera_dirs = torch.einsum("...ij,hwj->...hwi", torch.linalg.inv(Ks), pixels)
+    camera_dirs = camera_dirs / camera_dirs[..., 2:3]
+    directions = torch.einsum("...ij,...hwj->...hwi", camtoworlds[..., :3, :3], camera_dirs)
+    if not z_depth:
+        directions = F.normalize(directions, dim=-1)
+    return camtoworlds[..., None, None, :3, 3] + depths * directions
+
+
+def depth_to_normal_skew(depths: Tensor, camtoworlds: Tensor, Ks: Tensor) -> Tensor:
+    points = depth_to_points_skew(depths, camtoworlds, Ks)
+    vertical = points[..., 2:, 1:-1, :] - points[..., :-2, 1:-1, :]
+    horizontal = points[..., 1:-1, 2:, :] - points[..., 1:-1, :-2, :]
+    normals = F.normalize(torch.cross(vertical, horizontal, dim=-1), dim=-1)
+    return F.pad(normals, (0, 0, 1, 1, 1, 1))
+
+
 def ortho_depth_to_points(depths: Tensor, camtoworlds: Tensor, Ks: Tensor) -> Tensor:
     """Convert depth maps to 3D points
 
