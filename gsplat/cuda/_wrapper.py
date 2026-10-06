@@ -2833,10 +2833,10 @@ class RegisterProjection2DGSFused:
             ctx.height,
             radii,
             ray_transforms,
-            v_means2d,
-            v_depths,
-            v_ray_transforms,
-            v_normals,
+            v_means2d.contiguous(),
+            v_depths.contiguous(),
+            v_ray_transforms.contiguous(),
+            v_normals.contiguous(),
             ctx.needs_input_grad[
                 3
             ],  # viewmats_requires_grad (viewmats is input index 3)

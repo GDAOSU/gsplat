@@ -1702,7 +1702,7 @@ namespace
         at::Tensor dy       = points.narrow(h_dim, 1, H - 2).narrow(w_dim, 2, W - 2)
                             - points.narrow(h_dim, 1, H - 2).narrow(w_dim, 0, W - 2);
         at::Tensor normals  = at::linalg_cross(dx, dy, -1);
-        at::Tensor norm     = at::sqrt((normals * normals).sum(-1, true)).clamp_min(1e-12);
+        at::Tensor norm     = at::sqrt((normals * normals).sum(-1, true).clamp_min(1e-24));
         normals             = normals / norm;
         // F.pad(normals, (0, 0, 1, 1, 1, 1)): pad W and H dims by 1 on each side.
         return at::constant_pad_nd(normals, {0, 0, 1, 1, 1, 1}, 0.0); // [..., H, W, 3]
